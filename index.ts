@@ -19,6 +19,12 @@ import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { createMemoryCLI } from "./cli.js";
 
+// Import smart extraction & lifecycle components
+import { SmartExtractor } from "./src/smart-extractor.js";
+import { createLlmClient } from "./src/llm-client.js";
+import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
+import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
+
 // ============================================================================
 // Configuration & Types
 // ============================================================================
@@ -57,6 +63,15 @@ interface PluginConfig {
     hardMinScore?: number;
     timeDecayHalfLifeDays?: number;
   };
+  // Smart extraction config (Phase 1: from epro-memory)
+  smartExtraction?: boolean;
+  llm?: {
+    apiKey?: string;
+    model?: string;
+    baseURL?: string;
+  };
+  extractMinMessages?: number;
+  extractMaxChars?: number;
   scopes?: {
     default?: string;
     definitions?: Record<string, { description: string }>;
@@ -351,10 +366,47 @@ const memoryLanceDBProPlugin = {
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
 
+    // Initialize smart extraction (Phase 1: from epro-memory)
+    let smartExtractor: SmartExtractor | null = null;
+    if (config.smartExtraction !== false) {
+      try {
+        const llmApiKey = config.llm?.apiKey
+          ? resolveEnvVars(config.llm.apiKey)
+          : resolveEnvVars(config.embedding.apiKey);
+        const llmBaseURL = config.llm?.baseURL
+          ? resolveEnvVars(config.llm.baseURL)
+          : config.embedding.baseURL;
+        const llmModel = config.llm?.model || "gpt-4o-mini";
+
+        const llmClient = createLlmClient({
+          apiKey: llmApiKey,
+          model: llmModel,
+          baseURL: llmBaseURL,
+          timeoutMs: 30000,
+        });
+
+        smartExtractor = new SmartExtractor(store, embedder, llmClient, {
+          user: "User",
+          extractMinMessages: config.extractMinMessages ?? 4,
+          extractMaxChars: config.extractMaxChars ?? 8000,
+          defaultScope: config.scopes?.default ?? "global",
+          log: (msg: string) => api.logger.info(msg),
+        });
+
+        api.logger.info("memory-lancedb-pro: smart extraction enabled (LLM model: " + llmModel + ")");
+      } catch (err) {
+        api.logger.warn(`memory-lancedb-pro: smart extraction init failed, falling back to regex: ${String(err)}`);
+      }
+    }
+
+    // Initialize decay engine (Phase 2: from memx-memory)
+    const decayEngine = createDecayEngine(DEFAULT_DECAY_CONFIG);
+    const tierManager = createTierManager(DEFAULT_TIER_CONFIG);
+
     const pluginVersion = getPluginVersion();
 
     api.logger.info(
-      `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"})`
+      `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"}, smartExtraction: ${smartExtractor ? 'ON' : 'OFF'})`
     );
 
     // ========================================================================
@@ -417,8 +469,17 @@ const memoryLanceDBProPlugin = {
             return;
           }
 
+          // Format with L0 abstracts grouped by category when available
           const memoryContext = results
-            .map((r) => `- [${r.entry.category}:${r.entry.scope}] ${sanitizeForContext(r.entry.text)} (${(r.score * 100).toFixed(0)}%${r.sources?.bm25 ? ', vector+BM25' : ''}${r.sources?.reranked ? '+reranked' : ''})`)
+            .map((r) => {
+              let metaObj: Record<string, unknown> = {};
+              try { metaObj = JSON.parse(r.entry.metadata || "{}"); } catch {}
+              const displayCategory = (metaObj.memory_category as string) || r.entry.category;
+              const displayTier = (metaObj.tier as string) || "";
+              const tierPrefix = displayTier ? `[${displayTier.charAt(0).toUpperCase()}]` : "";
+              const abstract = (metaObj.l0_abstract as string) || r.entry.text;
+              return `- ${tierPrefix}[${displayCategory}:${r.entry.scope}] ${sanitizeForContext(abstract)} (${(r.score * 100).toFixed(0)}%${r.sources?.bm25 ? ', vector+BM25' : ''}${r.sources?.reranked ? '+reranked' : ''})`;
+            })
             .join("\n");
 
           api.logger.info?.(
@@ -488,7 +549,29 @@ const memoryLanceDBProPlugin = {
             }
           }
 
-          // Filter for capturable content
+          // ----------------------------------------------------------------
+          // Smart Extraction (Phase 1: LLM-powered 6-category extraction)
+          // ----------------------------------------------------------------
+          if (smartExtractor) {
+            const minMessages = config.extractMinMessages ?? 4;
+            if (texts.length >= minMessages) {
+              const conversationText = texts.join("\n");
+              const sessionKey = (event as any).sessionKey || "unknown";
+              const stats = await smartExtractor.extractAndPersist(
+                conversationText, sessionKey,
+              );
+              if (stats.created > 0 || stats.merged > 0) {
+                api.logger.info(
+                  `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped for agent ${agentId}`
+                );
+              }
+              return; // Smart extraction handled everything
+            }
+          }
+
+          // ----------------------------------------------------------------
+          // Fallback: regex-triggered capture (original logic)
+          // ----------------------------------------------------------------
           const toCapture = texts.filter((text) => text && shouldCapture(text));
           if (toCapture.length === 0) {
             return;
@@ -770,6 +853,11 @@ function parsePluginConfig(value: unknown): PluginConfig {
     autoRecallMinLength: parsePositiveInt(cfg.autoRecallMinLength),
     captureAssistant: cfg.captureAssistant === true,
     retrieval: typeof cfg.retrieval === "object" && cfg.retrieval !== null ? cfg.retrieval as any : undefined,
+    // Smart extraction config (Phase 1)
+    smartExtraction: cfg.smartExtraction !== false, // Default ON
+    llm: typeof cfg.llm === "object" && cfg.llm !== null ? cfg.llm as any : undefined,
+    extractMinMessages: parsePositiveInt(cfg.extractMinMessages) ?? 4,
+    extractMaxChars: parsePositiveInt(cfg.extractMaxChars) ?? 8000,
     scopes: typeof cfg.scopes === "object" && cfg.scopes !== null ? cfg.scopes as any : undefined,
     enableManagementTools: cfg.enableManagementTools === true,
     sessionMemory: typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
