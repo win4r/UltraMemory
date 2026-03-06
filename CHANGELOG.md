@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.1.0-beta.2 (Smart Memory Beta + Access Reinforcement)
+
+This is a **beta** release published under the npm dist-tag **`beta`** (it does not affect the stable `latest` channel).
+
+Highlights:
+- **Smart Extraction (LLM-powered)**: 6-category extraction with L0/L1/L2 metadata (falls back to regex capture when disabled or init fails)
+- **Lifecycle scoring integrated into retrieval**: decay-based score adjustment + tier floors
+- **Tier transitions (best-effort)**: bounded metadata write-backs for top results (tier / access stats)
+- **Access reinforcement for time decay**: frequently *manually recalled* memories decay more slowly (spaced-repetition style)
+  - Adds `AccessTracker` with debounced metadata write-back (accessCount / lastAccessedAt)
+  - Adds retrieval config: `reinforcementFactor` (default: 0.5) and `maxHalfLifeMultiplier` (default: 3)
+
+Notes:
+- Access reinforcement is gated to manual recall (`source: \"manual\"`) to avoid auto-recall strengthening noise.
+
+---
+
+## 1.1.0-beta.1 (Smart Memory Beta)
+
+- Initial beta with Smart Extraction + lifecycle components (decay engine + tier manager)
+
+---
+
+## 1.0.26
+
+**Access Reinforcement for Time Decay**
+
+- **Feat**: Access reinforcement — frequently *manually recalled* memories decay more slowly (spaced-repetition style)
+- **New**: `AccessTracker` with debounced metadata write-back (records accessCount / lastAccessedAt)
+- **New**: Config options under `retrieval`: `reinforcementFactor` (default: 0.5) and `maxHalfLifeMultiplier` (default: 3)
+- **New**: `MemoryStore.getById()` pure-read helper for efficient metadata lookup
+
+PR: #37
+
+Breaking changes: None. Backward compatible (set `reinforcementFactor: 0` to disable).
+
+---
+
 
 ## 1.0.22
 

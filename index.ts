@@ -17,6 +17,7 @@ import { createScopeManager } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
+import { AccessTracker } from "./src/access-tracker.js";
 import { createMemoryCLI } from "./cli.js";
 import { isNoise } from "./src/noise-filter.js";
 
@@ -33,6 +34,12 @@ import {
   toLifecycleMemory,
 } from "./src/smart-metadata.js";
 
+// Import smart extraction & lifecycle components
+import { SmartExtractor } from "./src/smart-extractor.js";
+import { createLlmClient } from "./src/llm-client.js";
+import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
+import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
+
 // ============================================================================
 // Configuration & Types
 // ============================================================================
@@ -40,7 +47,7 @@ import {
 interface PluginConfig {
   embedding: {
     provider: "openai-compatible";
-    apiKey: string;
+    apiKey: string | string[];
     model?: string;
     baseURL?: string;
     dimensions?: number;
@@ -70,6 +77,8 @@ interface PluginConfig {
     lengthNormAnchor?: number;
     hardMinScore?: number;
     timeDecayHalfLifeDays?: number;
+    reinforcementFactor?: number;
+    maxHalfLifeMultiplier?: number;
   };
   decay?: {
     recencyHalfLifeDays?: number;
@@ -194,12 +203,13 @@ const CAPTURE_EXCLUDE_PATTERNS = [
   /(删除|刪除|清理|清除).{0,12}(记忆|記憶|memory)/i,
 ];
 
-
 export function shouldCapture(text: string): boolean {
   const s = text.trim();
 
   // CJK characters carry more meaning per character, use lower minimum threshold
-  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(s);
+  const hasCJK = /[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(
+    s,
+  );
   const minLen = hasCJK ? 4 : 10;
   if (s.length < minLen || s.length > 500) {
     return false;
@@ -227,18 +237,36 @@ export function shouldCapture(text: string): boolean {
   return MEMORY_TRIGGERS.some((r) => r.test(s));
 }
 
-export function detectCategory(text: string): "preference" | "fact" | "decision" | "entity" | "other" {
+export function detectCategory(
+  text: string,
+): "preference" | "fact" | "decision" | "entity" | "other" {
   const lower = text.toLowerCase();
-  if (/prefer|radši|like|love|hate|want|偏好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/i.test(lower)) {
+  if (
+    /prefer|radši|like|love|hate|want|偏好|喜歡|喜欢|討厭|讨厌|不喜歡|不喜欢|愛用|爱用|習慣|习惯/i.test(
+      lower,
+    )
+  ) {
     return "preference";
   }
-  if (/rozhodli|decided|we decided|will use|we will use|we'?ll use|switch(ed)? to|migrate(d)? to|going forward|from now on|budeme|決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用|規則|流程|SOP/i.test(lower)) {
+  if (
+    /rozhodli|decided|we decided|will use|we will use|we'?ll use|switch(ed)? to|migrate(d)? to|going forward|from now on|budeme|決定|决定|選擇了|选择了|改用|換成|换成|以後用|以后用|規則|流程|SOP/i.test(
+      lower,
+    )
+  ) {
     return "decision";
   }
-  if (/\+\d{10,}|@[\w.-]+\.\w+|is called|jmenuje se|我的\S+是|叫我|稱呼|称呼/i.test(lower)) {
+  if (
+    /\+\d{10,}|@[\w.-]+\.\w+|is called|jmenuje se|我的\S+是|叫我|稱呼|称呼/i.test(
+      lower,
+    )
+  ) {
     return "entity";
   }
-  if (/\b(is|are|has|have|je|má|jsou)\b|總是|总是|從不|从不|一直|每次都|老是/i.test(lower)) {
+  if (
+    /\b(is|are|has|have|je|má|jsou)\b|總是|总是|從不|从不|一直|每次都|老是/i.test(
+      lower,
+    )
+  ) {
     return "fact";
   }
   return "other";
@@ -259,7 +287,10 @@ function sanitizeForContext(text: string): string {
 // Session Content Reading (for session-memory hook)
 // ============================================================================
 
-async function readSessionMessages(filePath: string, messageCount: number): Promise<string | null> {
+async function readSessionMessages(
+  filePath: string,
+  messageCount: number,
+): Promise<string | null> {
   try {
     const lines = (await readFile(filePath, "utf-8")).trim().split("\n");
     const messages: string[] = [];
@@ -274,12 +305,16 @@ async function readSessionMessages(filePath: string, messageCount: number): Prom
             const text = Array.isArray(msg.content)
               ? msg.content.find((c: any) => c.type === "text")?.text
               : msg.content;
-            if (text && !text.startsWith("/") && !text.includes("<relevant-memories>")) {
+            if (
+              text &&
+              !text.startsWith("/") &&
+              !text.includes("<relevant-memories>")
+            ) {
               messages.push(`${role}: ${text}`);
             }
           }
         }
-      } catch { }
+      } catch {}
     }
 
     if (messages.length === 0) return null;
@@ -289,7 +324,10 @@ async function readSessionMessages(filePath: string, messageCount: number): Prom
   }
 }
 
-async function readSessionContentWithResetFallback(sessionFilePath: string, messageCount = 15): Promise<string | null> {
+async function readSessionContentWithResetFallback(
+  sessionFilePath: string,
+  messageCount = 15,
+): Promise<string | null> {
   const primary = await readSessionMessages(sessionFilePath, messageCount);
   if (primary) return primary;
 
@@ -298,13 +336,18 @@ async function readSessionContentWithResetFallback(sessionFilePath: string, mess
     const dir = dirname(sessionFilePath);
     const resetPrefix = `${basename(sessionFilePath)}.reset.`;
     const files = await readdir(dir);
-    const resetCandidates = files.filter(name => name.startsWith(resetPrefix)).sort();
+    const resetCandidates = files
+      .filter((name) => name.startsWith(resetPrefix))
+      .sort();
 
     if (resetCandidates.length > 0) {
-      const latestResetPath = join(dir, resetCandidates[resetCandidates.length - 1]);
+      const latestResetPath = join(
+        dir,
+        resetCandidates[resetCandidates.length - 1],
+      );
       return await readSessionMessages(latestResetPath, messageCount);
     }
-  } catch { }
+  } catch {}
 
   return primary;
 }
@@ -314,14 +357,21 @@ function stripResetSuffix(fileName: string): string {
   return resetIndex === -1 ? fileName : fileName.slice(0, resetIndex);
 }
 
-async function findPreviousSessionFile(sessionsDir: string, currentSessionFile?: string, sessionId?: string): Promise<string | undefined> {
+async function findPreviousSessionFile(
+  sessionsDir: string,
+  currentSessionFile?: string,
+  sessionId?: string,
+): Promise<string | undefined> {
   try {
     const files = await readdir(sessionsDir);
     const fileSet = new Set(files);
 
     // Try recovering the non-reset base file
-    const baseFromReset = currentSessionFile ? stripResetSuffix(basename(currentSessionFile)) : undefined;
-    if (baseFromReset && fileSet.has(baseFromReset)) return join(sessionsDir, baseFromReset);
+    const baseFromReset = currentSessionFile
+      ? stripResetSuffix(basename(currentSessionFile))
+      : undefined;
+    if (baseFromReset && fileSet.has(baseFromReset))
+      return join(sessionsDir, baseFromReset);
 
     // Try canonical session ID file
     const trimmedId = sessionId?.trim();
@@ -331,19 +381,26 @@ async function findPreviousSessionFile(sessionsDir: string, currentSessionFile?:
 
       // Try topic variants
       const topicVariants = files
-        .filter(name => name.startsWith(`${trimmedId}-topic-`) && name.endsWith(".jsonl") && !name.includes(".reset."))
-        .sort().reverse();
+        .filter(
+          (name) =>
+            name.startsWith(`${trimmedId}-topic-`) &&
+            name.endsWith(".jsonl") &&
+            !name.includes(".reset."),
+        )
+        .sort()
+        .reverse();
       if (topicVariants.length > 0) return join(sessionsDir, topicVariants[0]);
     }
 
     // Fallback to most recent non-reset JSONL
     if (currentSessionFile) {
       const nonReset = files
-        .filter(name => name.endsWith(".jsonl") && !name.includes(".reset."))
-        .sort().reverse();
+        .filter((name) => name.endsWith(".jsonl") && !name.includes(".reset."))
+        .sort()
+        .reverse();
       if (nonReset.length > 0) return join(sessionsDir, nonReset[0]);
     }
-  } catch { }
+  } catch {}
 }
 
 // ============================================================================
@@ -353,7 +410,9 @@ async function findPreviousSessionFile(sessionsDir: string, currentSessionFile?:
 function getPluginVersion(): string {
   try {
     const pkgUrl = new URL("./package.json", import.meta.url);
-    const pkg = JSON.parse(readFileSync(pkgUrl, "utf8")) as { version?: string };
+    const pkg = JSON.parse(readFileSync(pkgUrl, "utf8")) as {
+      version?: string;
+    };
     return pkg.version || "unknown";
   } catch {
     return "unknown";
@@ -367,7 +426,8 @@ function getPluginVersion(): string {
 const memoryLanceDBProPlugin = {
   id: "memory-lancedb-pro",
   name: "Memory (LanceDB Pro)",
-  description: "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
+  description:
+    "Enhanced LanceDB-backed long-term memory with hybrid retrieval, multi-scope isolation, and management CLI",
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
@@ -383,20 +443,20 @@ const memoryLanceDBProPlugin = {
     } catch (err) {
       api.logger.warn(
         `memory-lancedb-pro: storage path issue — ${String(err)}\n` +
-        `  The plugin will still attempt to start, but writes may fail.`
+          `  The plugin will still attempt to start, but writes may fail.`,
       );
     }
 
     const vectorDim = getVectorDimensions(
       config.embedding.model || "text-embedding-3-small",
-      config.embedding.dimensions
+      config.embedding.dimensions,
     );
 
     // Initialize core components
     const store = new MemoryStore({ dbPath: resolvedDbPath, vectorDim });
     const embedder = createEmbedder({
       provider: "openai-compatible",
-      apiKey: resolveEnvVars(config.embedding.apiKey),
+      apiKey: config.embedding.apiKey,
       model: config.embedding.model || "text-embedding-3-small",
       baseURL: config.embedding.baseURL,
       dimensions: config.embedding.dimensions,
@@ -579,7 +639,7 @@ const memoryLanceDBProPlugin = {
       },
       {
         enableManagementTools: config.enableManagementTools,
-      }
+      },
     );
 
     // ========================================================================
@@ -610,7 +670,7 @@ const memoryLanceDBProPlugin = {
           } catch { return undefined; }
         })() : undefined,
       }),
-      { commands: ["memory-pro"] }
+      { commands: ["memory-pro"] },
     );
 
     // ========================================================================
@@ -621,7 +681,10 @@ const memoryLanceDBProPlugin = {
     // Default is OFF to prevent the model from accidentally echoing injected context.
     if (config.autoRecall === true) {
       api.on("before_agent_start", async (event, ctx) => {
-        if (!event.prompt || shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)) {
+        if (
+          !event.prompt ||
+          shouldSkipRetrieval(event.prompt, config.autoRecallMinLength)
+        ) {
           return;
         }
 
@@ -634,6 +697,7 @@ const memoryLanceDBProPlugin = {
             query: event.prompt,
             limit: 3,
             scopeFilter: accessibleScopes,
+            source: "auto-recall",
           });
 
           if (results.length === 0) {
@@ -655,7 +719,7 @@ const memoryLanceDBProPlugin = {
             .join("\n");
 
           api.logger.info?.(
-            `memory-lancedb-pro: injecting ${results.length} memories into context for agent ${agentId}`
+            `memory-lancedb-pro: injecting ${results.length} memories into context for agent ${agentId}`,
           );
 
           return {
@@ -695,7 +759,10 @@ const memoryLanceDBProPlugin = {
 
             const role = msgObj.role;
             const captureAssistant = config.captureAssistant === true;
-            if (role !== "user" && !(captureAssistant && role === "assistant")) {
+            if (
+              role !== "user" &&
+              !(captureAssistant && role === "assistant")
+            ) {
               continue;
             }
 
@@ -758,7 +825,9 @@ const memoryLanceDBProPlugin = {
             const vector = await embedder.embedPassage(text);
 
             // Check for duplicates using raw vector similarity (bypasses importance/recency weighting)
-            const existing = await store.vectorSearch(vector, 1, 0.1, [defaultScope]);
+            const existing = await store.vectorSearch(vector, 1, 0.1, [
+              defaultScope,
+            ]);
 
             if (existing.length > 0 && existing[0].score > 0.95) {
               continue;
@@ -791,7 +860,7 @@ const memoryLanceDBProPlugin = {
 
           if (stored > 0) {
             api.logger.info(
-              `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`
+              `memory-lancedb-pro: auto-captured ${stored} memories for agent ${agentId} in scope ${defaultScope}`,
             );
           }
         } catch (err) {
@@ -823,7 +892,8 @@ const memoryLanceDBProPlugin = {
           const defaultScope = scopeManager.getDefaultScope(agentId);
           const sessionEntry = (context.previousSessionEntry || context.sessionEntry || {}) as Record<string, unknown>;
           const currentSessionId = sessionEntry.sessionId as string | undefined;
-          let currentSessionFile = (sessionEntry.sessionFile as string) || undefined;
+          let currentSessionFile =
+            (sessionEntry.sessionFile as string) || undefined;
           const source = (context.commandSource as string) || "unknown";
 
           // Resolve session file (handle reset rotation)
@@ -835,10 +905,16 @@ const memoryLanceDBProPlugin = {
             if (workspaceDir) searchDirs.add(join(workspaceDir, "sessions"));
 
             for (const sessionsDir of searchDirs) {
-              const recovered = await findPreviousSessionFile(sessionsDir, currentSessionFile, currentSessionId);
+              const recovered = await findPreviousSessionFile(
+                sessionsDir,
+                currentSessionFile,
+                currentSessionId,
+              );
               if (recovered) {
                 currentSessionFile = recovered;
-                api.logger.debug(`session-memory: recovered session file: ${recovered}`);
+                api.logger.debug(
+                  `session-memory: recovered session file: ${recovered}`,
+                );
                 break;
               }
             }
@@ -850,9 +926,14 @@ const memoryLanceDBProPlugin = {
           }
 
           // Read session content
-          const sessionContent = await readSessionContentWithResetFallback(currentSessionFile, sessionMessageCount);
+          const sessionContent = await readSessionContentWithResetFallback(
+            currentSessionFile,
+            sessionMessageCount,
+          );
           if (!sessionContent) {
-            api.logger.debug("session-memory: no session content found, skipping");
+            api.logger.debug(
+              "session-memory: no session content found, skipping",
+            );
             return;
           }
 
@@ -928,7 +1009,9 @@ const memoryLanceDBProPlugin = {
 
     async function runBackup() {
       try {
-        const backupDir = api.resolvePath(join(resolvedDbPath, "..", "backups"));
+        const backupDir = api.resolvePath(
+          join(resolvedDbPath, "..", "backups"),
+        );
         await mkdir(backupDir, { recursive: true });
 
         const allMemories = await store.list(undefined, undefined, 10000, 0);
@@ -937,28 +1020,34 @@ const memoryLanceDBProPlugin = {
         const dateStr = new Date().toISOString().split("T")[0];
         const backupFile = join(backupDir, `memory-backup-${dateStr}.jsonl`);
 
-        const lines = allMemories.map(m => JSON.stringify({
-          id: m.id,
-          text: m.text,
-          category: m.category,
-          scope: m.scope,
-          importance: m.importance,
-          timestamp: m.timestamp,
-          metadata: m.metadata,
-        }));
+        const lines = allMemories.map((m) =>
+          JSON.stringify({
+            id: m.id,
+            text: m.text,
+            category: m.category,
+            scope: m.scope,
+            importance: m.importance,
+            timestamp: m.timestamp,
+            metadata: m.metadata,
+          }),
+        );
 
         await writeFile(backupFile, lines.join("\n") + "\n");
 
         // Keep only last 7 backups
-        const files = (await readdir(backupDir)).filter(f => f.startsWith("memory-backup-") && f.endsWith(".jsonl")).sort();
+        const files = (await readdir(backupDir))
+          .filter((f) => f.startsWith("memory-backup-") && f.endsWith(".jsonl"))
+          .sort();
         if (files.length > 7) {
           const { unlink } = await import("node:fs/promises");
           for (const old of files.slice(0, files.length - 7)) {
-            await unlink(join(backupDir, old)).catch(() => { });
+            await unlink(join(backupDir, old)).catch(() => {});
           }
         }
 
-        api.logger.info(`memory-lancedb-pro: backup completed (${allMemories.length} entries → ${backupFile})`);
+        api.logger.info(
+          `memory-lancedb-pro: backup completed (${allMemories.length} entries → ${backupFile})`,
+        );
       } catch (err) {
         api.logger.warn(`memory-lancedb-pro: backup failed: ${String(err)}`);
       }
@@ -975,10 +1064,17 @@ const memoryLanceDBProPlugin = {
         // If embedding/retrieval tests hang (bad network / slow provider), the gateway
         // may never bind its HTTP port, causing restart timeouts.
 
-        const withTimeout = async <T>(p: Promise<T>, ms: number, label: string): Promise<T> => {
+        const withTimeout = async <T>(
+          p: Promise<T>,
+          ms: number,
+          label: string,
+        ): Promise<T> => {
           let timeout: ReturnType<typeof setTimeout> | undefined;
           const timeoutPromise = new Promise<never>((_, reject) => {
-            timeout = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+            timeout = setTimeout(
+              () => reject(new Error(`${label} timed out after ${ms}ms`)),
+              ms,
+            );
           });
           try {
             return await Promise.race([p, timeoutPromise]);
@@ -990,25 +1086,39 @@ const memoryLanceDBProPlugin = {
         const runStartupChecks = async () => {
           try {
             // Test components (bounded time)
-            const embedTest = await withTimeout(embedder.test(), 8_000, "embedder.test()");
-            const retrievalTest = await withTimeout(retriever.test(), 8_000, "retriever.test()");
+            const embedTest = await withTimeout(
+              embedder.test(),
+              8_000,
+              "embedder.test()",
+            );
+            const retrievalTest = await withTimeout(
+              retriever.test(),
+              8_000,
+              "retriever.test()",
+            );
 
             api.logger.info(
               `memory-lancedb-pro: initialized successfully ` +
-              `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
-              `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
-              `mode: ${retrievalTest.mode}, ` +
-              `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`
+                `(embedding: ${embedTest.success ? "OK" : "FAIL"}, ` +
+                `retrieval: ${retrievalTest.success ? "OK" : "FAIL"}, ` +
+                `mode: ${retrievalTest.mode}, ` +
+                `FTS: ${retrievalTest.hasFtsSupport ? "enabled" : "disabled"})`,
             );
 
             if (!embedTest.success) {
-              api.logger.warn(`memory-lancedb-pro: embedding test failed: ${embedTest.error}`);
+              api.logger.warn(
+                `memory-lancedb-pro: embedding test failed: ${embedTest.error}`,
+              );
             }
             if (!retrievalTest.success) {
-              api.logger.warn(`memory-lancedb-pro: retrieval test failed: ${retrievalTest.error}`);
+              api.logger.warn(
+                `memory-lancedb-pro: retrieval test failed: ${retrievalTest.error}`,
+              );
             }
           } catch (error) {
-            api.logger.warn(`memory-lancedb-pro: startup checks failed: ${String(error)}`);
+            api.logger.warn(
+              `memory-lancedb-pro: startup checks failed: ${String(error)}`,
+            );
           }
         };
 
@@ -1035,7 +1145,15 @@ const memoryLanceDBProPlugin = {
         setTimeout(() => void runBackup(), 60_000); // 1 min after start
         backupTimer = setInterval(() => void runBackup(), BACKUP_INTERVAL_MS);
       },
-      stop: () => {
+      stop: async () => {
+        // Flush pending access reinforcement data before shutdown
+        try {
+          await accessTracker.flush();
+        } catch (err) {
+          api.logger.warn("memory-lancedb-pro: flush failed on stop:", err);
+        }
+        accessTracker.destroy();
+
         if (backupTimer) {
           clearInterval(backupTimer);
           backupTimer = null;
@@ -1044,7 +1162,6 @@ const memoryLanceDBProPlugin = {
       },
     });
   },
-
 };
 
 function parsePluginConfig(value: unknown): PluginConfig {
@@ -1058,26 +1175,60 @@ function parsePluginConfig(value: unknown): PluginConfig {
     throw new Error("embedding config is required");
   }
 
-  const apiKey = typeof embedding.apiKey === "string"
-    ? embedding.apiKey
-    : process.env.OPENAI_API_KEY || "";
+  // Accept single key (string) or array of keys for round-robin rotation
+  let apiKey: string | string[];
+  if (typeof embedding.apiKey === "string") {
+    apiKey = embedding.apiKey;
+  } else if (Array.isArray(embedding.apiKey) && embedding.apiKey.length > 0) {
+    // Validate every element is a non-empty string
+    const invalid = embedding.apiKey.findIndex(
+      (k: unknown) => typeof k !== "string" || (k as string).trim().length === 0,
+    );
+    if (invalid !== -1) {
+      throw new Error(
+        `embedding.apiKey[${invalid}] is invalid: expected non-empty string`,
+      );
+    }
+    apiKey = embedding.apiKey as string[];
+  } else if (embedding.apiKey !== undefined) {
+    // apiKey is present but wrong type — throw, don't silently fall back
+    throw new Error("embedding.apiKey must be a string or non-empty array of strings");
+  } else {
+    apiKey = process.env.OPENAI_API_KEY || "";
+  }
 
-  if (!apiKey) {
+  if (!apiKey || (Array.isArray(apiKey) && apiKey.length === 0)) {
     throw new Error("embedding.apiKey is required (set directly or via OPENAI_API_KEY env var)");
+  }
   }
 
   return {
     embedding: {
       provider: "openai-compatible",
       apiKey,
-      model: typeof embedding.model === "string" ? embedding.model : "text-embedding-3-small",
-      baseURL: typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined,
+      model:
+        typeof embedding.model === "string"
+          ? embedding.model
+          : "text-embedding-3-small",
+      baseURL:
+        typeof embedding.baseURL === "string"
+          ? resolveEnvVars(embedding.baseURL)
+          : undefined,
       // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
       // Also accept legacy top-level `dimensions` for convenience.
       dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
-      taskQuery: typeof embedding.taskQuery === "string" ? embedding.taskQuery : undefined,
-      taskPassage: typeof embedding.taskPassage === "string" ? embedding.taskPassage : undefined,
-      normalized: typeof embedding.normalized === "boolean" ? embedding.normalized : undefined,
+      taskQuery:
+        typeof embedding.taskQuery === "string"
+          ? embedding.taskQuery
+          : undefined,
+      taskPassage:
+        typeof embedding.taskPassage === "string"
+          ? embedding.taskPassage
+          : undefined,
+      normalized:
+        typeof embedding.normalized === "boolean"
+          ? embedding.normalized
+          : undefined,
     },
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : undefined,
     autoCapture: cfg.autoCapture !== false,
@@ -1095,14 +1246,19 @@ function parsePluginConfig(value: unknown): PluginConfig {
     extractMaxChars: parsePositiveInt(cfg.extractMaxChars) ?? 8000,
     scopes: typeof cfg.scopes === "object" && cfg.scopes !== null ? cfg.scopes as any : undefined,
     enableManagementTools: cfg.enableManagementTools === true,
-    sessionMemory: typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
-      ? {
-        enabled: (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
-        messageCount: typeof (cfg.sessionMemory as Record<string, unknown>).messageCount === "number"
-          ? (cfg.sessionMemory as Record<string, unknown>).messageCount as number
-          : undefined,
-      }
-      : undefined,
+    sessionMemory:
+      typeof cfg.sessionMemory === "object" && cfg.sessionMemory !== null
+        ? {
+            enabled:
+              (cfg.sessionMemory as Record<string, unknown>).enabled !== false,
+            messageCount:
+              typeof (cfg.sessionMemory as Record<string, unknown>)
+                .messageCount === "number"
+                ? ((cfg.sessionMemory as Record<string, unknown>)
+                    .messageCount as number)
+                : undefined,
+          }
+        : undefined,
   };
 }
 

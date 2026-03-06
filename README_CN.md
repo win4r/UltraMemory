@@ -55,6 +55,82 @@ OpenClaw 内置的 `memory-lancedb` 插件仅提供基本的向量搜索。**mem
 
 ---
 
+## 🧪 Beta：智能记忆 v1.1.0
+
+> **状态**：Beta 版 — 通过 npm `beta` dist-tag 发布，不影响 `latest` 稳定通道。
+
+`dev/smart-memory-v1.1.0` 分支为记忆写入和检索管线引入了三大增强：
+
+### 新功能
+
+| 功能 | 说明 |
+|------|------|
+| **智能提取** | LLM 驱动的 6 类别提取（profile、preferences、entities、events、cases、patterns），支持 L0/L1/L2 分层元数据。禁用或 LLM 初始化失败时回退到正则捕获。 |
+| **生命周期评分** | Weibull 衰减模型集成到检索中 — 分数通过 `max(tierFloor, decayComposite)` 调整，高频访问和高重要性的记忆排名更靠前。 |
+| **分层管理** | 三层系统（Core → Working → Peripheral），根据访问频率、复合得分和重要性自动晋升/降级。 |
+
+### 安装 Beta 版
+
+```bash
+npm i memory-lancedb-pro@beta
+```
+
+或指定精确版本：
+
+```bash
+npm i memory-lancedb-pro@1.1.0-beta.1
+```
+
+### 配置
+
+智能提取**默认开启**。它复用你现有的 embedding API key 进行 LLM 调用（也可以单独配置 LLM 端点）：
+
+```json
+{
+  "plugins.entries.memory-lancedb-pro": {
+    "config": {
+      "smartExtraction": true,
+      "llm": {
+        "apiKey": "${OPENAI_API_KEY}",
+        "model": "gpt-4o-mini",
+        "baseURL": "https://api.openai.com/v1"
+      },
+      "extractMinMessages": 4,
+      "extractMaxChars": 8000
+    }
+  }
+}
+```
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `smartExtraction` | `true` | 启用/禁用 LLM 驱动提取 |
+| `llm.apiKey` | *(embedding apiKey)* | 提取 LLM 的 API key |
+| `llm.model` | `gpt-4o-mini` | 提取和去重使用的 LLM 模型 |
+| `llm.baseURL` | *(embedding baseURL)* | LLM API 的 Base URL |
+| `extractMinMessages` | `4` | 触发提取的最少对话消息数 |
+| `extractMaxChars` | `8000` | 处理提取的最大对话字符数 |
+
+### 新增文件
+
+| 文件 | 用途 |
+|------|------|
+| `src/smart-extractor.ts` | LLM 提取管线：对话 → 提取 → 去重 → 持久化 |
+| `src/extraction-prompts.ts` | 提取、去重和合并的提示词模板 |
+| `src/llm-client.ts` | OpenAI 兼容 LLM 客户端，含 JSON 解析 |
+| `src/memory-categories.ts` | 6 类别分类系统 + 合并策略 |
+| `src/decay-engine.ts` | Weibull 拉伸指数衰减模型 |
+| `src/tier-manager.ts` | 三层晋升/降级生命周期管理器 |
+
+### 反馈
+
+这是 beta 版本 — 欢迎在以下地方报告问题或分享反馈：
+- [GitHub Issues](https://github.com/win4r/memory-lancedb-pro/issues)
+
+回退到稳定版：`npm i memory-lancedb-pro@latest`
+
+---
+
 ## 架构概览
 
 ```
@@ -491,7 +567,9 @@ openclaw config get plugins.slots.memory
     "filterNoise": true,
     "lengthNormAnchor": 500,
     "hardMinScore": 0.35,
-    "timeDecayHalfLifeDays": 60
+    "timeDecayHalfLifeDays": 60,
+    "reinforcementFactor": 0.5,
+    "maxHalfLifeMultiplier": 3
   },
   "enableManagementTools": false,
   "scopes": {
@@ -520,6 +598,17 @@ openclaw config get plugins.slots.memory
 ```
 
 </details>
+
+### 访问强化（1.0.26）
+
+为了让“经常被用到的记忆”衰减得更慢，检索器可以根据 **手动 recall 的频率**（类似间隔重复/记忆强化）来延长有效的 time-decay half-life。
+
+配置项（位于 `retrieval` 下）：
+- `reinforcementFactor`（范围 0–2，默认 `0.5`）— 设为 `0` 可关闭
+- `maxHalfLifeMultiplier`（范围 1–10，默认 `3`）— 硬上限：有效 half-life ≤ 基础值 × multiplier
+
+说明：
+- 强化逻辑只对白名单 `source: "manual"` 生效（用户/工具主动 recall），避免 auto-recall 意外“强化”噪声。
 
 ### Embedding 提供商
 
@@ -905,6 +994,51 @@ v1.1.0 常见 `metadata` 字段：
 
 请升级到 **memory-lancedb-pro >= 1.0.14**。插件已对这些字段统一做 `Number(...)` 转换后再参与运算（例如：计算分数、按时间排序）。
 
+## AI Agent 铁律（Iron Rules）
+
+> **OpenClaw 用户**：将下方代码块复制到你的 `AGENTS.md` 中，让 Agent 自动遵守这些规则。
+
+```markdown
+## Rule 1 — 双层记忆存储（铁律）
+
+Every pitfall/lesson learned → IMMEDIATELY store TWO memories to LanceDB before moving on:
+
+- **Technical layer**: Pitfall: [symptom]. Cause: [root cause]. Fix: [solution]. Prevention: [how to avoid]
+  (category: fact, importance ≥ 0.8)
+- **Principle layer**: Decision principle ([tag]): [behavioral rule]. Trigger: [when it applies]. Action: [what to do]
+  (category: decision, importance ≥ 0.85)
+- After each store, immediately `memory_recall` with anchor keywords to verify retrieval.
+  If not found, rewrite and re-store.
+- Missing either layer = incomplete.
+  Do NOT proceed to next topic until both are stored and verified.
+- Also update relevant SKILL.md files to prevent recurrence.
+
+## Rule 2 — LanceDB 卫生
+
+Entries must be short and atomic (< 500 chars). Never store raw conversation summaries, large blobs, or duplicates.
+Prefer structured format with keywords for retrieval.
+
+## Rule 3 — Recall before retry
+
+On ANY tool failure, repeated error, or unexpected behavior, ALWAYS `memory_recall` with relevant keywords
+(error message, tool name, symptom) BEFORE retrying. LanceDB likely already has the fix.
+Blind retries waste time and repeat known mistakes.
+
+## Rule 4 — 编辑前确认目标代码库
+
+When working on memory plugins, confirm you are editing the intended package
+(e.g., `memory-lancedb-pro` vs built-in `memory-lancedb`) before making changes;
+use `memory_recall` + filesystem search to avoid patching the wrong repo.
+
+## Rule 5 — 插件代码变更必须清 jiti 缓存（MANDATORY）
+
+After modifying ANY `.ts` file under `plugins/`, MUST run `rm -rf /tmp/jiti/` BEFORE `openclaw gateway restart`.
+jiti caches compiled TS; restart alone loads STALE code. This has caused silent bugs multiple times.
+Config-only changes do NOT need cache clearing.
+```
+
+---
+
 ## 依赖
 
 | 包                          | 用途                             |
@@ -928,12 +1062,14 @@ v1.1.0 常见 `metadata` 字段：
 <a href="https://github.com/furedericca-lab"><img src="https://avatars.githubusercontent.com/u/263020793?v=4" width="48" height="48" alt="@furedericca-lab" /></a>
 <a href="https://github.com/joe2643"><img src="https://avatars.githubusercontent.com/u/19421931?v=4" width="48" height="48" alt="@joe2643" /></a>
 <a href="https://github.com/AliceLJY"><img src="https://avatars.githubusercontent.com/u/136287420?v=4" width="48" height="48" alt="@AliceLJY" /></a>
+<a href="https://github.com/chenjiyong"><img src="https://avatars.githubusercontent.com/u/8199522?v=4" width="48" height="48" alt="@chenjiyong" /></a>
 </p>
 
 - [@win4r](https://github.com/win4r)（3 次提交）
 - [@kctony](https://github.com/kctony)（2 次提交）
 - [@Akatsuki-Ryu](https://github.com/Akatsuki-Ryu)（1 次提交）
 - [@AliceLJY](https://github.com/AliceLJY)（1 次提交）
+- [@chenjiyong](https://github.com/chenjiyong)（1 次提交）
 - [@JasonSuz](https://github.com/JasonSuz)（1 次提交）
 - [@Minidoracat](https://github.com/Minidoracat)（1 次提交）
 - [@furedericca-lab](https://github.com/furedericca-lab)（1 次提交）
