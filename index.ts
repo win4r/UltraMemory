@@ -23,6 +23,7 @@ import { registerAllMemoryTools } from "./src/tools.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./src/self-improvement-files.js";
 import type { MdMirrorWriter } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
+import { parseClawteamScopes, applyClawteamScopes } from "./src/clawteam-scope.js";
 import { runWithReflectionTransientRetryOnce } from "./src/reflection-retry.js";
 import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/session-recovery.js";
 import {
@@ -1700,23 +1701,10 @@ const memoryLanceDBProPlugin = {
     const scopeManager = createScopeManager(config.scopes);
 
     // ClawTeam integration: extend accessible scopes via env var
-    const clawteamScopesRaw = process.env.CLAWTEAM_MEMORY_SCOPE;
-    if (clawteamScopesRaw) {
-      const extraScopes = clawteamScopesRaw.split(",").map(s => s.trim()).filter(Boolean);
-      for (const scope of extraScopes) {
-        if (!scopeManager.getScopeDefinition(scope)) {
-          scopeManager.addScopeDefinition(scope, { description: `CLAWTEAM_MEMORY_SCOPE env var: ${scope}` });
-        }
-      }
-      const originalGetAccessibleScopes = scopeManager.getAccessibleScopes.bind(scopeManager);
-      scopeManager.getAccessibleScopes = (agentId) => {
-        const base = originalGetAccessibleScopes(agentId);
-        for (const s of extraScopes) {
-          if (!base.includes(s)) base.push(s);
-        }
-        return base;
-      };
-      api.logger.info(`memory-lancedb-pro: CLAWTEAM_MEMORY_SCOPE added scopes: ${extraScopes.join(", ")}`);
+    const clawteamScopes = parseClawteamScopes(process.env.CLAWTEAM_MEMORY_SCOPE);
+    if (clawteamScopes.length > 0) {
+      applyClawteamScopes(scopeManager, clawteamScopes);
+      api.logger.info(`memory-lancedb-pro: CLAWTEAM_MEMORY_SCOPE added scopes: ${clawteamScopes.join(", ")}`);
     }
 
     const migrator = createMigrator(store);
