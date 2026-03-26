@@ -62,7 +62,11 @@ if (CONFIG_PATH) {
   externalConfig = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
 }
 
-const DASHSCOPE_KEY = "sk-425fb8a1de7b4999870097e1749a5127";
+const DASHSCOPE_KEY = process.env.DASHSCOPE_API_KEY || "";
+if (!DASHSCOPE_KEY && !externalConfig.embedding?.apiKey && !process.env.EMBEDDING_API_KEY && !process.env.OPENAI_API_KEY) {
+  console.error("Error: API key required. Set DASHSCOPE_API_KEY, OPENAI_API_KEY, or EMBEDDING_API_KEY");
+  process.exit(1);
+}
 const DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 const EMBEDDING_API_KEY = externalConfig.embedding?.apiKey || process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY || DASHSCOPE_KEY;

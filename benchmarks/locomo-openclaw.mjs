@@ -24,7 +24,11 @@ const repoRoot = resolve(__dirname, "..");
 const VERBOSE = process.argv.includes("--verbose");
 const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 
-const DASHSCOPE_KEY = "sk-425fb8a1de7b4999870097e1749a5127";
+const DASHSCOPE_KEY = process.env.DASHSCOPE_API_KEY || "";
+if (!DASHSCOPE_KEY) {
+  console.error("Error: DASHSCOPE_API_KEY env var required");
+  process.exit(1);
+}
 const DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const CATEGORY_NAMES = { "1": "single-hop", "2": "multi-hop", "3": "temporal", "4": "open-domain", "5": "adversarial" };
 

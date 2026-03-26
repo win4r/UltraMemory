@@ -213,7 +213,6 @@ export function createHttpApp(service: MemoryService): Hono {
     try {
       const query = c.req.query("query");
       const limitRaw = c.req.query("limit");
-      const offsetRaw = c.req.query("offset");
       const scope = c.req.query("scope");
       const category = c.req.query("category");
 
@@ -230,16 +229,7 @@ export function createHttpApp(service: MemoryService): Hono {
         }
       }
 
-      // offset — optional, 0-10000
-      const offset = toFiniteNumber(offsetRaw);
-      if (offsetRaw !== undefined) {
-        if (offset === undefined || !Number.isInteger(offset) || offset < 0 || offset > 10_000) {
-          return c.json(
-            errorJson("VALIDATION_ERROR", "offset must be an integer between 0 and 10000"),
-            400,
-          );
-        }
-      }
+      // Note: recall is semantic search, not paginated — offset not applicable
 
       const results = await service.recall({
         query,
