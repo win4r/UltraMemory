@@ -69,6 +69,11 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
             type: "string",
             description: "Filter by category",
           },
+          depth: {
+            type: "string",
+            description: "Content depth: l0 (one-sentence ~100 tokens), l1 (bullet list ~2K tokens), l2/full (complete text). Default: full",
+            enum: ["l0", "l1", "l2", "full"],
+          },
         },
         required: ["query"],
         additionalProperties: false,

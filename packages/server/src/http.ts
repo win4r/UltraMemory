@@ -215,6 +215,7 @@ export function createHttpApp(service: MemoryService): Hono {
       const limitRaw = c.req.query("limit");
       const scope = c.req.query("scope");
       const category = c.req.query("category");
+      const depth = c.req.query("depth") as "l0" | "l1" | "l2" | "full" | undefined;
 
       // query — required
       if (!query || query.trim() === "") {
@@ -229,13 +230,17 @@ export function createHttpApp(service: MemoryService): Hono {
         }
       }
 
-      // Note: recall is semantic search, not paginated — offset not applicable
+      // depth — optional, must be l0/l1/l2/full
+      if (depth !== undefined && !["l0", "l1", "l2", "full"].includes(depth)) {
+        return c.json(errorJson("VALIDATION_ERROR", "depth must be one of: l0, l1, l2, full"), 400);
+      }
 
       const results = await service.recall({
         query,
         limit: limit ?? undefined,
         scopeFilter: parseScopeFilter(scope),
         category: category || undefined,
+        depth,
       });
 
       return c.json(results, 200);

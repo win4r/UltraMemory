@@ -59,6 +59,22 @@ export interface RecallParams {
   limit?: number;
   scopeFilter?: string[];
   category?: string;
+  /** Content depth: l0 (one-sentence), l1 (bullet list), l2 (full text), full (alias for l2). Default: "full" */
+  depth?: "l0" | "l1" | "l2" | "full";
+}
+
+export interface ScoringTrace {
+  vectorRank?: number;
+  vectorScore?: number;
+  bm25Rank?: number;
+  bm25Score?: number;
+  rrfFused?: number;
+  rerankScore?: number;
+  recencyBoost?: number;
+  lengthNorm?: number;
+  timeDecay?: number;
+  finalScore: number;
+  queryType?: string;
 }
 
 export interface RecallResult {
@@ -69,6 +85,8 @@ export interface RecallResult {
   importance: number;
   score: number;
   timestamp: number;
+  /** Scoring breakdown for explainability (when available) */
+  scoringTrace?: ScoringTrace;
 }
 
 export interface UpdateParams {
@@ -310,15 +328,50 @@ export class MemoryService {
       ).catch(() => {});
     }
 
-    return results.map((r) => ({
-      id: r.entry.id,
-      text: r.entry.text,
-      category: r.entry.category,
-      scope: r.entry.scope,
-      importance: r.entry.importance,
-      score: r.score,
-      timestamp: r.entry.timestamp,
-    }));
+    const depth = params.depth || "full";
+
+    return results.map((r) => {
+      // L0/L1/L2 dynamic depth loading — return appropriate content tier
+      const meta = parseSmartMetadata(r.entry.metadata, r.entry);
+      let text: string;
+      switch (depth) {
+        case "l0":
+          text = meta.l0_abstract || r.entry.text.slice(0, 200);
+          break;
+        case "l1":
+          text = meta.l1_overview || r.entry.text.slice(0, 1000);
+          break;
+        case "l2":
+        case "full":
+        default:
+          text = meta.l2_content || r.entry.text;
+          break;
+      }
+
+      // Build scoring trace from retrieval result metadata (if available)
+      const sources = (r as any).sources || {};
+      const scoringTrace: ScoringTrace = {
+        vectorRank: sources.vector?.rank,
+        vectorScore: sources.vector?.score,
+        bm25Rank: sources.bm25?.rank,
+        bm25Score: sources.bm25?.score,
+        rrfFused: sources.fused?.score,
+        rerankScore: sources.rerank?.score,
+        finalScore: r.score,
+        queryType: (r as any).queryType,
+      };
+
+      return {
+        id: r.entry.id,
+        text,
+        category: r.entry.category,
+        scope: r.entry.scope,
+        importance: r.entry.importance,
+        score: r.score,
+        timestamp: r.entry.timestamp,
+        scoringTrace,
+      };
+    });
   }
 
   async update(params: UpdateParams): Promise<UpdateResult> {

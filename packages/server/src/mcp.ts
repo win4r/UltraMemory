@@ -35,6 +35,7 @@ export async function startMcpServer(
             ? [(args as any).scope]
             : undefined,
           category: (args as any).category,
+          depth: (args as any).depth,
         });
         break;
       case "memory_update":

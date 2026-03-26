@@ -11,6 +11,7 @@ export type {
   ListParams,
   ListEntry,
   StatsResult,
+  ScoringTrace,
 } from "./service.js";
 export { startMcpServer } from "./mcp.js";
 export { createHttpApp } from "./http.js";
