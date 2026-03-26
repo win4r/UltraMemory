@@ -64,6 +64,26 @@ export async function startMcpServer(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
         break;
+      case "memory_checkpoint":
+        result = await service.checkpoint({
+          summary: (args as any).summary,
+          scope: (args as any).scope,
+          sessionId: (args as any).sessionId,
+          decisions: (args as any).decisions,
+          nextActions: (args as any).nextActions,
+          openLoops: (args as any).openLoops,
+          entities: (args as any).entities,
+        });
+        break;
+      case "memory_resume":
+        result = await service.resume({
+          scope: (args as any).scope,
+          sessionId: (args as any).sessionId,
+        });
+        if (result === null) {
+          result = { message: "No checkpoint found for the given scope/session." };
+        }
+        break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
