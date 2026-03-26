@@ -49,8 +49,13 @@ export default {
     service
       .initialize()
       .then(() => {
-        createOpenClawAdapter(api, service);
-        api.logger.info("ultramemory: initialized and ready");
+        createOpenClawAdapter(api, service, {
+          autoRecall: rawConfig.autoRecall !== false,
+          autoRecallMinLength: rawConfig.autoRecallMinLength as number | undefined,
+          autoRecallMaxItems: rawConfig.autoRecallMaxItems as number | undefined,
+          autoRecallMaxChars: rawConfig.autoRecallMaxChars as number | undefined,
+          autoCapture: rawConfig.autoCapture !== false,
+        });
       })
       .catch((err) => {
         api.logger.error(`ultramemory: initialization failed: ${err}`);

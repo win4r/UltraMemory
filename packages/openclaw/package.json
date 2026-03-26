@@ -3,15 +3,21 @@
   "version": "0.1.0",
   "type": "module",
   "main": "index.ts",
+  "publishConfig": {
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts"
+  },
   "license": "MIT",
   "dependencies": {
     "@ultramemory/core": "workspace:*",
-    "@ultramemory/server": "workspace:*"
+    "@ultramemory/server": "workspace:*",
+    "@sinclair/typebox": "0.34.48"
   },
   "openclaw": {
     "extensions": ["./index.ts"]
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   }
 }

@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
+  "publishConfig": {
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts"
+  },
   "license": "MIT",
   "dependencies": {
     "@lancedb/lancedb": "^0.26.2",
@@ -13,6 +17,7 @@
     "proper-lockfile": "^4.1.2"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   }
 }

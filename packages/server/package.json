@@ -6,6 +6,11 @@
   "bin": {
     "ultramemory": "src/cli.ts"
   },
+  "publishConfig": {
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "bin": { "ultramemory": "dist/cli.js" }
+  },
   "license": "MIT",
   "dependencies": {
     "@ultramemory/core": "workspace:*",
@@ -14,7 +19,12 @@
     "@hono/node-server": "^1",
     "commander": "^14.0.0"
   },
+  "devDependencies": {
+    "tsx": "^4"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.mjs"
   }
 }
