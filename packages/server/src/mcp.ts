@@ -64,6 +64,20 @@ export async function startMcpServer(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
         break;
+      case "memory_provenance":
+        result = await service.getProvenance((args as any).id);
+        if (result === null) {
+          result = { message: "Memory not found." };
+        }
+        break;
+      case "memory_consolidate":
+        result = await service.consolidate({
+          scope: (args as any).scope,
+          maxEntries: (args as any).maxEntries,
+          similarityThreshold: (args as any).similarityThreshold,
+          generateDigest: (args as any).generateDigest,
+        });
+        break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }

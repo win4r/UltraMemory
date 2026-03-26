@@ -167,5 +167,52 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
         additionalProperties: false,
       },
     },
+    {
+      name: "memory_provenance",
+      description:
+        "Query the provenance (origin story) of a memory — shows where it came from, which session created it, and why",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Memory ID to query provenance for",
+          },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "memory_consolidate",
+      description:
+        "Consolidate memories — merge near-duplicates and generate a compressed user profile digest. Run periodically (e.g. weekly) to keep memory clean and efficient.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            description: "Scope to consolidate (default: global)",
+          },
+          maxEntries: {
+            type: "number",
+            description: "Max memories to scan (default: 100, max: 500)",
+            minimum: 10,
+            maximum: 500,
+          },
+          similarityThreshold: {
+            type: "number",
+            description: "Cosine similarity threshold for merging (default: 0.85, range: 0.7-0.99)",
+            minimum: 0.7,
+            maximum: 0.99,
+          },
+          generateDigest: {
+            type: "boolean",
+            description: "Whether to generate a compressed digest entry (default: true)",
+          },
+        },
+        additionalProperties: false,
+      },
+    },
   ];
 }
