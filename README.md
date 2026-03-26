@@ -79,6 +79,48 @@ npx @ultramemory/server serve --mcp --http --port 1933
 
 ---
 
+## Roadmap
+
+### P0 — Blocks Release
+
+- [ ] **HTTP input validation + auth middleware + CORS** — REST API currently accepts unvalidated input with no authentication; must be hardened before exposing any port
+- [ ] **Atomic store updates** — `update()` is delete + re-add; crash between the two = data loss. Add try-catch rollback or single-operation upsert
+- [ ] **MemoryService.shutdown() resource cleanup** — Currently a no-op; must close LanceDB connections, flush caches, abort in-flight API calls
+
+### P1 — Reliability
+
+- [ ] **True RRF fusion** — Current "RRF" is weighted linear combination (`vector*0.7 + bm25*0.3`); replace with reciprocal rank fusion `1/(k+rank)`
+- [ ] **Database-layer pagination for list()** — Currently fetches all rows then slices in JS; catastrophic on large datasets
+- [ ] **Embedder exponential backoff** — On rate limit, rotates keys but doesn't back off; all keys exhausted = immediate failure
+- [ ] **Disk-full handling in store layer** — ENOSPC errors are silently swallowed; data is lost with no warning
+- [ ] **FTS index failure recovery** — When FTS index creation fails, fallback is O(n) full-table substring scan
+
+### P2 — Competitiveness
+
+- [ ] **Complete OpenClaw hook migration** — 7 hooks remain as TODO: `agent:bootstrap`, `command:new/reset` (self-improvement), `after_tool_call` (reflection error tracking), `before_prompt_build` priority 12/15 (reflection injection), full memory reflection LLM pass
+- [ ] **True MMR diversity** — Current implementation defers similar results but lacks the `λ × relevance - (1-λ) × diversity` tradeoff formula
+- [ ] **Query understanding layer** — No query classification (question vs statement), no query expansion, no multi-hop reasoning
+- [ ] **Run full LoCoMo benchmark** — 1,986 QA across 10 conversations; current 10-QA sample shows 50% Acc vs OpenViking's 52%
+- [ ] **Python SDK** — Expand adoption beyond Node.js ecosystem
+
+### P3 — Polish
+
+- [ ] **Result explainability** — Why was memory #X ranked #1? Show scoring breakdown
+- [ ] **Circuit breaker for embedding API** — Fast-fail on persistent outages instead of trying all keys
+- [ ] **Token-based chunking** — Replace character-count proxy with actual tokenizer
+- [ ] **Per-category score thresholds** — Profile memories may need 0.25 cutoff, patterns may need 0.5
+- [ ] **Structured error responses** — Error codes, request IDs, no raw stack traces in HTTP responses
+
+### Benchmark Status
+
+| System | LoCoMo10 Acc@0.5 | Notes |
+|--------|-----------------|-------|
+| OpenClaw baseline | 35.65% | No memory plugin |
+| + OpenViking (mem off) | 52.08% | Filesystem paradigm |
+| **+ UltraMemory** | **50.0%** | 10-QA sample, hybrid vector+bm25, no reranking |
+
+---
+
 ## Why UltraMemory?
 
 Most AI agents have amnesia. They forget everything the moment you start a new chat.
