@@ -81,35 +81,79 @@ npx @ultramemory/server serve --mcp --http --port 1933
 
 ## Roadmap
 
-### P0 — Blocks Release ✅
+### Completed
 
-- [x] **HTTP input validation + auth middleware + CORS** — Bearer token auth, input validation, rate limiting, structured errors
-- [x] **Atomic store updates** — Reversed to add-then-delete (duplicate > data loss), ENOSPC detection
-- [x] **MemoryService.shutdown() resource cleanup** — Closes LanceDB, clears embedder cache, nulls refs for GC
+<details>
+<summary><strong>P0 — Blocks Release ✅</strong></summary>
 
-### P1 — Reliability ✅
+- [x] HTTP input validation + auth middleware + CORS — Bearer token auth, input validation, rate limiting, structured errors
+- [x] Atomic store updates — Reversed to add-then-delete (duplicate > data loss), ENOSPC detection
+- [x] MemoryService.shutdown() resource cleanup — Closes LanceDB, clears embedder cache, nulls refs for GC
 
-- [x] **True RRF fusion** — Reciprocal rank fusion `weight/(k+rank)`, k=60 configurable
-- [x] **Database-layer pagination for list()** — Pushes `offset+limit+100` cap to LanceDB query
-- [x] **Embedder exponential backoff** — 3 retries with ~1s/2s/4s + jitter, capped at 30s
-- [x] **Disk-full handling in store layer** — ENOSPC → clear error message
-- [x] **FTS index failure recovery** — Skips O(n) lexical fallback on datasets > 10K rows
+</details>
 
-### P2 — Competitiveness (3/5 done)
+<details>
+<summary><strong>P1 — Reliability ✅</strong></summary>
 
-- [x] **OpenClaw hook migration** — 5/7 hooks ported: agent:bootstrap, command:new/reset, after_tool_call, before_prompt_build×2. Remaining: full reflection LLM pass
-- [x] **True MMR diversity** — `λ×relevance - (1-λ)×max_sim`, mmrLambda configurable (default 0.7)
-- [x] **Query understanding layer** — Heuristic classification (temporal/question/lookup/general), auto-adjusts retrieval weights
-- [ ] **Run full LoCoMo benchmark** — 1,986 QA across 10 conversations; current 10-QA sample shows 50% Acc vs OpenViking's 52%
-- [ ] **Python SDK** — Expand adoption beyond Node.js ecosystem
+- [x] True RRF fusion — Reciprocal rank fusion `weight/(k+rank)`, k=60 configurable
+- [x] Database-layer pagination for list() — Pushes `offset+limit+100` cap to LanceDB query
+- [x] Embedder exponential backoff — 3 retries with ~1s/2s/4s + jitter, capped at 30s
+- [x] Disk-full handling in store layer — ENOSPC → clear error message
+- [x] FTS index failure recovery — Skips O(n) lexical fallback on datasets > 10K rows
+- [x] Structured error responses — Error codes, no stack trace leakage
 
-### P3 — Polish
+</details>
 
-- [ ] **Result explainability** — Why was memory #X ranked #1? Show scoring breakdown
-- [ ] **Circuit breaker for embedding API** — Fast-fail on persistent outages instead of trying all keys
-- [ ] **Token-based chunking** — Replace character-count proxy with actual tokenizer
-- [ ] **Per-category score thresholds** — Profile memories may need 0.25 cutoff, patterns may need 0.5
-- [x] **Structured error responses** — Completed in P0 (error codes, no stack trace leakage)
+<details>
+<summary><strong>P2 — Competitiveness (3/5 done)</strong></summary>
+
+- [x] OpenClaw hook migration — 5/7 hooks ported
+- [x] True MMR diversity — `λ×relevance - (1-λ)×max_sim`, mmrLambda configurable (default 0.7)
+- [x] Query understanding layer — Heuristic classification (temporal/question/lookup/general)
+
+</details>
+
+### v2.0 — Knowledge Graph & Retrieval Evolution
+
+> Inspired by [cognee](https://github.com/topoteretes/cognee)'s graph-first architecture.
+> Goal: evolve UltraMemory from a vector-retrieval engine into a graph-aware knowledge engine.
+
+#### P0 — High Impact, Low Effort
+
+| Feature | Description | Key Files | Status |
+|---------|-------------|-----------|--------|
+| **Multi-Layer Vector Fanout** | Build independent vector indices for L0 (abstract), L1 (overview), and L2 (content). A single query fans out across all three layers, then results are fused via existing RRF. Concept-level queries hit L0; detail-level queries hit L2. Maximizes the value of the existing L0/L1/L2 tiered storage. | `store.ts`, `retriever.ts` | 🔲 |
+| **Deterministic Memory IDs** | Replace `randomUUID()` with `uuid5(scope + text_hash)`. Re-storing the same content produces the same ID — enables O(1) dedup at write time, eliminating the need for vector-similarity dedup on every store. Inspired by cognee's `uuid5(NAMESPACE_OID, doc_id + chunk_index)` pattern. | `store.ts` | 🔲 |
+| **Full Scoring Trace** | Capture intermediate scores at every pipeline stage (vector rank → BM25 rank → fused → reranked → decay-boosted → final). Expose via optional `debug=true` parameter on recall. Show *why* memory #X ranked #1. | `retriever.ts` | 🔲 |
+| **Per-Category Score Thresholds** | Replace the global `hardMinScore: 0.35` with category-specific cutoffs. Profile/preference memories use a lower threshold (0.25) since they're always relevant; pattern/case memories use a higher threshold (0.5) since false positives are costly. | `retriever.ts`, `config` | 🔲 |
+
+#### P1 — High Impact, Medium Effort
+
+| Feature | Description | Key Files | Status |
+|---------|-------------|-----------|--------|
+| **Relation-Aware Reranking (Triplet Scoring)** | Index the existing `relations[]` metadata field. During reranking, if memory A and memory B are connected via a relation, apply a mutual boost. Cognee scores triplets as `node1.distance + edge.distance + node2.distance` — we adapt this by boosting related memories after RRF fusion. Requires: relation index in LanceDB metadata, optional `traverseDepth` config, neighbor lookup during rerank. | `retriever.ts`, `store.ts`, `smart-metadata.ts` | 🔲 |
+| **Feedback Weight EMA** | Add a `feedback_weight: float` field (default 0.5) to SmartMemoryMetadata. When a recalled memory is used by the agent, increase its weight via exponential moving average (EMA). When a recalled memory is ignored or corrected, decrease it. The feedback weight feeds directly into the decay engine's intrinsic score. Replaces the scattered `bad_recall_count` / `access_count` signals with a single unified score. | `smart-metadata.ts`, `decay-engine.ts`, new `feedback-learner.ts` | 🔲 |
+| **Entity Normalization** | Build a lightweight synonym/canonical-name resolver. "TS" → "TypeScript", "React.js" → "React". Applied during smart extraction to normalize `fact_key` values. Prevents the same concept from being stored under multiple names. Inspired by cognee's OWL ontology grounding, but simplified to a configurable synonym table + fuzzy matching. | new `entity-resolver.ts`, `smart-extractor.ts` | 🔲 |
+| **Bidirectional Lifecycle Triggers** | Currently, tier promotions (Peripheral → Working → Core) only trigger on auto-recall, not manual `memory_recall` tool calls. Fix: add `runRecallLifecycle()` to the manual recall path. Also track "helpful" / "not helpful" signals — feed into feedback weight. | `tier-manager.ts`, `access-tracker.ts` | 🔲 |
+
+#### P2 — Medium Impact, Medium Effort
+
+| Feature | Description | Key Files | Status |
+|---------|-------------|-----------|--------|
+| **Composable Pipeline/Task Abstraction** | Extract the current hard-coded store→extract→embed→index flow into a `Task` class that wraps any async function with batch size config and type auto-detection. Users can compose custom pipelines (e.g., classify → extract entities → build relations → index). Inspired by cognee's `Task(fn, task_config={"batch_size": 100})` pattern. | new `pipeline.ts`, refactor `smart-extractor.ts` | 🔲 |
+| **Memory Consolidation** | When N memories of the same category + scope accumulate, offer LLM-powered consolidation into a single, richer memory. Track lineage via `consolidated_from: string[]` in metadata. Integrate with tier demotion — stale peripheral memories become consolidation candidates. | new `consolidator.ts`, `smart-metadata.ts` | 🔲 |
+| **Temporal Filters in Query** | Support `after:2024-01-01 before:2024-03-01` syntax in query strings. Parse into LanceDB SQL predicates on the `timestamp` / `valid_from` / `invalidated_at` fields. Complements existing temporal query classification with explicit date filtering. | `retriever.ts` | 🔲 |
+| **Run Full LoCoMo Benchmark** | 1,986 QA across 10 conversations. Current 10-QA sample: 50% Acc. Target: surpass OpenViking's 52%. | `benchmarks/` | 🔲 |
+
+#### P3 — Polish & Future
+
+| Feature | Description | Key Files | Status |
+|---------|-------------|-----------|--------|
+| **Chain-of-Thought Iterative Retrieval** | For complex queries, optionally run multi-round retrieval: retrieve → LLM validates sufficiency → if insufficient, expand query and retrieve again. Max 3 rounds. Inspired by cognee's `GRAPH_COMPLETION_COT` mode. | `retriever.ts` | 🔲 |
+| **Multi-Agent Shared Memory** | Extend scope model with `shared:*` prefix. Agents optionally read from team/project shared scopes. Track which agent contributed each memory (provenance). When agents have contradictory memories, surface both with source attribution. | `scopes.ts`, `smart-metadata.ts` | 🔲 |
+| **Circuit Breaker for Embedding API** | Fast-fail on persistent outages instead of exhausting all key rotations. | `embedder.ts` | 🔲 |
+| **Token-Based Chunking** | Replace character-count proxy with actual tokenizer for precise chunk boundaries. | `chunker.ts` | 🔲 |
+| **Python SDK** | Expand adoption beyond Node.js ecosystem. | new `packages/python/` | 🔲 |
 
 ### Benchmark Status
 
