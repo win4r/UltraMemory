@@ -81,19 +81,19 @@ npx @ultramemory/server serve --mcp --http --port 1933
 
 ## Roadmap
 
-### P0 — Blocks Release
+### P0 — Blocks Release ✅
 
-- [ ] **HTTP input validation + auth middleware + CORS** — REST API currently accepts unvalidated input with no authentication; must be hardened before exposing any port
-- [ ] **Atomic store updates** — `update()` is delete + re-add; crash between the two = data loss. Add try-catch rollback or single-operation upsert
-- [ ] **MemoryService.shutdown() resource cleanup** — Currently a no-op; must close LanceDB connections, flush caches, abort in-flight API calls
+- [x] **HTTP input validation + auth middleware + CORS** — Bearer token auth, input validation, rate limiting, structured errors
+- [x] **Atomic store updates** — Reversed to add-then-delete (duplicate > data loss), ENOSPC detection
+- [x] **MemoryService.shutdown() resource cleanup** — Closes LanceDB, clears embedder cache, nulls refs for GC
 
-### P1 — Reliability
+### P1 — Reliability ✅
 
-- [ ] **True RRF fusion** — Current "RRF" is weighted linear combination (`vector*0.7 + bm25*0.3`); replace with reciprocal rank fusion `1/(k+rank)`
-- [ ] **Database-layer pagination for list()** — Currently fetches all rows then slices in JS; catastrophic on large datasets
-- [ ] **Embedder exponential backoff** — On rate limit, rotates keys but doesn't back off; all keys exhausted = immediate failure
-- [ ] **Disk-full handling in store layer** — ENOSPC errors are silently swallowed; data is lost with no warning
-- [ ] **FTS index failure recovery** — When FTS index creation fails, fallback is O(n) full-table substring scan
+- [x] **True RRF fusion** — Reciprocal rank fusion `weight/(k+rank)`, k=60 configurable
+- [x] **Database-layer pagination for list()** — Pushes `offset+limit+100` cap to LanceDB query
+- [x] **Embedder exponential backoff** — 3 retries with ~1s/2s/4s + jitter, capped at 30s
+- [x] **Disk-full handling in store layer** — ENOSPC → clear error message
+- [x] **FTS index failure recovery** — Skips O(n) lexical fallback on datasets > 10K rows
 
 ### P2 — Competitiveness
 
@@ -109,7 +109,7 @@ npx @ultramemory/server serve --mcp --http --port 1933
 - [ ] **Circuit breaker for embedding API** — Fast-fail on persistent outages instead of trying all keys
 - [ ] **Token-based chunking** — Replace character-count proxy with actual tokenizer
 - [ ] **Per-category score thresholds** — Profile memories may need 0.25 cutoff, patterns may need 0.5
-- [ ] **Structured error responses** — Error codes, request IDs, no raw stack traces in HTTP responses
+- [x] **Structured error responses** — Completed in P0 (error codes, no stack trace leakage)
 
 ### Benchmark Status
 
