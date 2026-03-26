@@ -390,6 +390,9 @@ export class MemoryStore {
       } catch (err: any) {
         const code = err.code || "";
         const message = err.message || String(err);
+        if (code === "ENOSPC" || message.includes("ENOSPC") || message.includes("No space left")) {
+          throw new Error("UltraMemory: disk full — cannot store memory");
+        }
         throw new Error(
           `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`,
         );
@@ -953,38 +956,33 @@ export class MemoryStore {
         metadata: updates.metadata ?? original.metadata,
       };
 
-      // LanceDB doesn't support in-place update; delete + re-add.
-      // Serialize updates per store instance to avoid stale rollback races.
-      // If the add fails after delete, attempt best-effort recovery without
-      // overwriting a newer concurrent successful update.
-      const rollbackCandidate =
-        (await this.getById(original.id).catch(() => null)) ?? original;
+      // LanceDB doesn't support in-place update; we use add-then-delete
+      // instead of delete-then-add because a duplicate is recoverable but
+      // data loss is not. If a crash occurs after add but before delete,
+      // the worst case is a temporary duplicate entry (which can be
+      // deduplicated on next access). If we deleted first and crashed
+      // before add, the data would be permanently lost.
       const resolvedId = escapeSqlLiteral(row.id as string);
-      await this.table!.delete(`id = '${resolvedId}'`);
       try {
         await this.table!.add([updated]);
       } catch (addError) {
-        const current = await this.getById(original.id).catch(() => null);
-        if (current) {
-          throw new Error(
-            `Failed to update memory ${id}: write failed after delete, but an existing record was preserved. ` +
-            `Write error: ${addError instanceof Error ? addError.message : String(addError)}`,
-          );
-        }
-
-        try {
-          await this.table!.add([rollbackCandidate]);
-        } catch (rollbackError) {
-          throw new Error(
-            `Failed to update memory ${id}: write failed after delete, and rollback also failed. ` +
-            `Write error: ${addError instanceof Error ? addError.message : String(addError)}. ` +
-            `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-          );
-        }
-
+        // Add failed — the old entry is still intact, no data loss.
         throw new Error(
-          `Failed to update memory ${id}: write failed after delete, latest available record restored. ` +
+          `Failed to update memory ${id}: could not write new entry, original preserved. ` +
           `Write error: ${addError instanceof Error ? addError.message : String(addError)}`,
+        );
+      }
+
+      try {
+        await this.table!.delete(`id = '${resolvedId}'`);
+      } catch (deleteError) {
+        // Delete failed after successful add — the new entry exists so
+        // the update is logically complete. Log a warning but return
+        // success; the stale duplicate will be harmless.
+        console.warn(
+          `[UltraMemory] update(${id}): new entry written but old entry delete failed. ` +
+          `A duplicate may exist until next compaction. ` +
+          `Delete error: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
         );
       }
 
@@ -1079,6 +1077,14 @@ export class MemoryStore {
       available: this.ftsIndexCreated,
       lastError: this._lastFtsError,
     };
+  }
+
+  /** Release the LanceDB connection and table reference so GC can collect them. */
+  close(): void {
+    this.table = null;
+    this.db = null;
+    this.initPromise = null;
+    this.ftsIndexCreated = false;
   }
 
   /** Rebuild FTS index (drops and recreates). Useful for recovery after corruption. */

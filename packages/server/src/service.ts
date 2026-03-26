@@ -195,7 +195,20 @@ export class MemoryService {
   }
 
   async shutdown(): Promise<void> {
+    if (!this.initialized) return;
+
+    this._store?.close();
+    this.embedder?.clearCache();
+
+    this._store = null!;
+    this.retriever = null!;
+    this.embedder = null!;
+    this.scopeManager = null!;
+    this.decayEngine = null!;
+    this.tierManager = null!;
     this.initialized = false;
+
+    process.stderr.write("[MemoryService] shutdown complete\n");
   }
 
   isReady(): boolean {

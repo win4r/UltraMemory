@@ -67,6 +67,12 @@ class EmbeddingCache {
     this.cache.set(k, { vector, createdAt: Date.now() });
   }
 
+  clear(): void {
+    this.cache.clear();
+    this.hits = 0;
+    this.misses = 0;
+  }
+
   get size(): number { return this.cache.size; }
   get stats(): { size: number; hits: number; misses: number; hitRate: string } {
     const total = this.hits + this.misses;
@@ -922,6 +928,10 @@ export class Embedder {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  clearCache(): void {
+    this._cache.clear();
   }
 
   get cacheStats() {

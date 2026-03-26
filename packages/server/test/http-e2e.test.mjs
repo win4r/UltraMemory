@@ -98,21 +98,13 @@ describe("REST API routes", () => {
     assert.equal(captured.category, "fact");
   });
 
-  it("GET /api/v1/memory/recall defaults empty query", async () => {
-    let captured;
-    const mockService = {
-      recall: async (params) => {
-        captured = params;
-        return [];
-      },
-    };
+  it("GET /api/v1/memory/recall rejects empty query with 400", async () => {
+    const mockService = {};
     const app = createHttpApp(mockService);
     const res = await app.request("/api/v1/memory/recall");
-    assert.equal(res.status, 200);
-    assert.equal(captured.query, "");
-    assert.equal(captured.limit, undefined);
-    assert.equal(captured.scopeFilter, undefined);
-    assert.equal(captured.category, undefined);
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error);
   });
 
   // ---------------------------------------------------------------------------
@@ -156,7 +148,8 @@ describe("REST API routes", () => {
     });
     assert.equal(res.status, 404);
     const body = await res.json();
-    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.error.code, "NOT_FOUND");
   });
 
   // ---------------------------------------------------------------------------
@@ -187,7 +180,8 @@ describe("REST API routes", () => {
     const res = await app.request("/api/v1/memory/gone", { method: "DELETE" });
     assert.equal(res.status, 404);
     const body = await res.json();
-    assert.equal(body.ok, false);
+    assert.ok(body.error);
+    assert.equal(body.error.code, "NOT_FOUND");
   });
 
   // ---------------------------------------------------------------------------
