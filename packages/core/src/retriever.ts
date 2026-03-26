@@ -89,6 +89,8 @@ export interface RetrievalConfig {
    *  Queries containing these prefixes (e.g. "proj:AIF") will use BM25-only + mustContain
    *  to avoid semantic false positives from vector search. */
   tagPrefixes: string[];
+  /** RRF constant k (default: 60). Higher values reduce the influence of high-ranked items. */
+  rrfK: number;
 }
 
 export interface RetrievalContext {
@@ -131,6 +133,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   reinforcementFactor: 0.5,
   maxHalfLifeMultiplier: 3,
   tagPrefixes: ["proj", "env", "team", "scope"],
+  rrfK: 60,
 };
 
 // ============================================================================
@@ -664,7 +667,9 @@ export class MemoryRetriever {
     // Get all unique document IDs
     const allIds = new Set([...vectorMap.keys(), ...bm25Map.keys()]);
 
-    // Calculate RRF scores
+    // True RRF uses rank positions rather than raw scores, making it robust
+    // to score distribution differences between vector and BM25 systems.
+    const k = this.config.rrfK;
     const fusedResults: RetrievalResult[] = [];
 
     for (const id of allIds) {
@@ -686,24 +691,27 @@ export class MemoryRetriever {
       // Use the result with more complete data (prefer vector result if both exist)
       const baseResult = vectorResult || bm25Result!;
 
-      // Use vector similarity as the base score.
-      // BM25 hit acts as a bonus (keyword match confirms relevance).
-      const vectorScore = vectorResult ? vectorResult.score : 0;
-      const bm25Score = bm25Result ? bm25Result.score : 0;
-      // Weighted fusion: vectorWeight/bm25Weight directly control score blending.
-      // BM25 high-score floor (>= 0.75) preserves exact keyword matches
-      // (e.g. API keys, ticket numbers) that may have low vector similarity.
-      const weightedFusion = (vectorScore * this.config.vectorWeight)
-                           + (bm25Score * this.config.bm25Weight);
-      const fusedScore = vectorResult
-        ? clamp01(
-          Math.max(
-            weightedFusion,
-            bm25Score >= 0.75 ? bm25Score * 0.92 : 0,
-          ),
-          0.1,
-        )
-        : clamp01(bm25Result!.score, 0.1);
+      // RRF: score = Σ (weight_i / (k + rank_i))
+      const vectorRRF = vectorResult
+        ? this.config.vectorWeight / (k + vectorResult.rank)
+        : 0;
+      const bm25RRF = bm25Result
+        ? this.config.bm25Weight / (k + bm25Result.rank)
+        : 0;
+      let fusedScore = vectorRRF + bm25RRF;
+
+      // High-score floor fallback: if a BM25 result has normalized score >= 0.75,
+      // ensure its fused score is at least bm25Score * 0.92. This preserves exact
+      // keyword matches (e.g. API keys, ticket numbers) that may rank poorly in
+      // vector search.
+      if (bm25Result && bm25Result.score >= 0.75) {
+        fusedScore = Math.max(fusedScore, bm25Result.score * 0.92);
+      }
+
+      // BM25-only results (no vector match) fall back to raw BM25 score
+      if (!vectorResult) {
+        fusedScore = clamp01(bm25Result!.score, 0.1);
+      }
 
       fusedResults.push({
         entry: baseResult.entry,

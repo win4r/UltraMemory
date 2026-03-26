@@ -198,6 +198,7 @@ export class MemoryStore {
   private table: LanceDB.Table | null = null;
   private initPromise: Promise<void> | null = null;
   private ftsIndexCreated = false;
+  private ftsUnavailable = false;
   private updateQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: StoreConfig) { }
@@ -344,6 +345,7 @@ export class MemoryStore {
         err,
       );
       this.ftsIndexCreated = false;
+      this.ftsUnavailable = true;
     }
 
     this.db = db;
@@ -561,6 +563,15 @@ export class MemoryStore {
     const fetchLimit = inactiveFilter ? Math.min(safeLimit * 20, 200) : safeLimit;
 
     if (!this.ftsIndexCreated) {
+      if (this.ftsUnavailable) {
+        const rowCount = await this.table!.countRows();
+        if (rowCount > 10_000) {
+          console.warn(
+            `UltraMemory: FTS unavailable and dataset too large for lexical fallback (${rowCount} rows); using vector-only retrieval`,
+          );
+          return [];
+        }
+      }
       return this.lexicalFallbackSearch(query, safeLimit, scopeFilter, options);
     }
 
@@ -625,7 +636,16 @@ export class MemoryStore {
       }
       return this.lexicalFallbackSearch(query, safeLimit, scopeFilter, options);
     } catch (err) {
-      console.warn("BM25 search failed, falling back to empty results:", err);
+      console.warn("BM25 search failed, falling back to lexical search:", err);
+      if (this.ftsUnavailable) {
+        const rowCount = await this.table!.countRows();
+        if (rowCount > 10_000) {
+          console.warn(
+            `UltraMemory: FTS unavailable and dataset too large for lexical fallback (${rowCount} rows); using vector-only retrieval`,
+          );
+          return [];
+        }
+      }
       return this.lexicalFallbackSearch(query, safeLimit, scopeFilter, options);
     }
   }
@@ -786,8 +806,12 @@ export class MemoryStore {
       query = query.where(conditions.join(" AND "));
     }
 
-    // Fetch all matching rows (no pre-limit) so app-layer sort is correct across full dataset
+    // Safety limit: fetch at most offset+limit+100 rows from the DB to prevent
+    // unbounded memory usage on large tables. App-layer sort still applies over
+    // this window. For deep pagination (offset > 1000), use export instead.
+    const fetchLimit = offset + limit + 100;
     const results = await query
+      .limit(fetchLimit)
       .select([
         "id",
         "text",
@@ -1085,6 +1109,7 @@ export class MemoryStore {
     this.db = null;
     this.initPromise = null;
     this.ftsIndexCreated = false;
+    this.ftsUnavailable = false;
   }
 
   /** Rebuild FTS index (drops and recreates). Useful for recovery after corruption. */
@@ -1105,12 +1130,14 @@ export class MemoryStore {
       // Recreate
       await this.createFtsIndex(this.table!);
       this.ftsIndexCreated = true;
+      this.ftsUnavailable = false;
       this._lastFtsError = null;
       return { success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this._lastFtsError = msg;
       this.ftsIndexCreated = false;
+      this.ftsUnavailable = true;
       return { success: false, error: msg };
     }
   }

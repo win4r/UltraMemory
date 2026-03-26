@@ -519,43 +519,55 @@ export class Embedder {
 
   /**
    * Call embeddings.create with automatic key rotation on rate-limit errors.
-   * Tries each key in the pool at most once before giving up.
+   * Tries each key in the pool per round, with exponential backoff between rounds.
    * Accepts an optional AbortSignal to support true request cancellation.
    */
   private async embedWithRetry(payload: any, signal?: AbortSignal): Promise<any> {
-    const maxAttempts = this.clients.length;
+    const maxRetries = 3;
+    const keysPerRound = this.clients.length;
     let lastError: Error | undefined;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const client = this.nextClient();
-      try {
-        // Pass signal to OpenAI SDK if provided (SDK v6+ supports this)
-        return await client.embeddings.create(payload, signal ? { signal } : undefined);
-      } catch (error) {
-        // If aborted, re-throw immediately
-        if (error instanceof Error && error.name === 'AbortError') {
-          throw error;
-        }
-        
-        lastError = error instanceof Error ? error : new Error(String(error));
+    for (let retry = 0; retry < maxRetries; retry++) {
+      for (let attempt = 0; attempt < keysPerRound; attempt++) {
+        const client = this.nextClient();
+        try {
+          // Pass signal to OpenAI SDK if provided (SDK v6+ supports this)
+          return await client.embeddings.create(payload, signal ? { signal } : undefined);
+        } catch (error) {
+          // If aborted, re-throw immediately
+          if (error instanceof Error && error.name === 'AbortError') {
+            throw error;
+          }
 
-        if (this.isRateLimitError(error) && attempt < maxAttempts - 1) {
-          console.log(
-            `[memory-lancedb-pro] Attempt ${attempt + 1}/${maxAttempts} hit rate limit, rotating to next key...`
-          );
-          continue;
-        }
+          lastError = error instanceof Error ? error : new Error(String(error));
 
-        // Non-rate-limit error → don't retry, let caller handle (e.g. chunking)
-        if (!this.isRateLimitError(error)) {
-          throw error;
+          // Non-rate-limit error → don't retry, let caller handle (e.g. chunking)
+          if (!this.isRateLimitError(error)) {
+            throw error;
+          }
+
+          if (attempt < keysPerRound - 1) {
+            console.log(
+              `[memory-lancedb-pro] Attempt ${attempt + 1}/${keysPerRound} hit rate limit, rotating to next key...`
+            );
+            continue;
+          }
         }
+      }
+
+      // All keys exhausted this round — apply exponential backoff before next round
+      if (retry < maxRetries - 1) {
+        const backoffMs = Math.min(1000 * Math.pow(2, retry), 30000) + Math.random() * 1000;
+        console.warn(
+          `UltraMemory: rate limited, retrying in ${Math.round(backoffMs)}ms (attempt ${retry + 1}/${maxRetries})`
+        );
+        await new Promise(r => setTimeout(r, backoffMs));
       }
     }
 
-    // All keys exhausted with rate-limit errors
+    // All retries exhausted with rate-limit errors
     throw new Error(
-      `All ${maxAttempts} API keys exhausted (rate limited). Last error: ${lastError?.message || "unknown"}`,
+      `All ${keysPerRound} API keys exhausted after ${maxRetries} retries (rate limited). Last error: ${lastError?.message || "unknown"}`,
       { cause: lastError }
     );
   }
