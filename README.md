@@ -1,34 +1,85 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro · 🦞OpenClaw Plugin
+# UltraMemory
 
-**AI Memory Assistant for [OpenClaw](https://github.com/openclaw/openclaw) Agents**
+**Universal AI Agent Long-Term Memory Engine**
 
 *Give your AI agent a brain that actually remembers — across sessions, across agents, across time.*
 
-A LanceDB-backed OpenClaw memory plugin that stores preferences, decisions, and project context, then auto-recalls them in future sessions.
+Hybrid Vector+BM25 retrieval, cross-encoder reranking, Weibull decay, LLM smart extraction, semantic dedup, and L0/L1/L2 tiered content — all in a zero-ops embedded LanceDB backend.
 
-[![OpenClaw Plugin](https://img.shields.io/badge/OpenClaw-Plugin-blue)](https://github.com/openclaw/openclaw)
-[![OpenClaw 2026.3+](https://img.shields.io/badge/OpenClaw-2026.3%2B-brightgreen)](https://github.com/openclaw/openclaw)
 [![npm version](https://img.shields.io/npm/v/memory-lancedb-pro)](https://www.npmjs.com/package/memory-lancedb-pro)
-[![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-<h2>⚡ <a href="https://github.com/CortexReach/memory-lancedb-pro/releases/tag/v1.1.0-beta.10">v1.1.0-beta.10 — OpenClaw 2026.3+ Hook Adaptation</a></h2>
-
-<p>
-  ✅ Fully adapted for OpenClaw 2026.3+ new plugin architecture<br>
-  🔄 Uses <code>before_prompt_build</code> hooks (replacing deprecated <code>before_agent_start</code>)<br>
-  🩺 Run <code>openclaw doctor --fix</code> after upgrading
-</p>
-
-[English](README.md) | [简体中文](README_CN.md) | [繁體中文](README_TW.md) | [日本語](README_JA.md) | [한국어](README_KO.md) | [Français](README_FR.md) | [Español](README_ES.md) | [Deutsch](README_DE.md) | [Italiano](README_IT.md) | [Русский](README_RU.md) | [Português (Brasil)](README_PT-BR.md)
+[![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
+[![OpenClaw Plugin](https://img.shields.io/badge/OpenClaw-Plugin-blue)](https://github.com/openclaw/openclaw)
 
 </div>
 
 ---
 
-## Why memory-lancedb-pro?
+## Quick Start
+
+### As MCP Server (Claude Code, Cursor, Windsurf)
+
+```bash
+npx @ultramemory/server serve --mcp
+```
+
+Add to your MCP config:
+```json
+{
+  "mcpServers": {
+    "ultramemory": {
+      "command": "npx",
+      "args": ["@ultramemory/server", "serve", "--mcp"],
+      "env": { "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+### As REST API
+
+```bash
+npx @ultramemory/server serve --http --port 1933
+```
+
+```bash
+# Store a memory
+curl -X POST http://localhost:1933/api/v1/memory \
+  -H "Content-Type: application/json" \
+  -d '{"text": "User prefers dark mode", "category": "preference"}'
+
+# Recall memories
+curl "http://localhost:1933/api/v1/memory/recall?query=dark+mode"
+```
+
+### As OpenClaw Plugin
+
+```bash
+openclaw plugin add @ultramemory/openclaw
+```
+
+### Both MCP + REST simultaneously
+
+```bash
+npx @ultramemory/server serve --mcp --http --port 1933
+```
+
+---
+
+## Packages
+
+| Package | Description |
+|---------|-------------|
+| `@ultramemory/core` | Framework-agnostic memory engine |
+| `@ultramemory/server` | MCP + REST server |
+| `@ultramemory/openclaw` | OpenClaw plugin adapter |
+
+---
+
+## Why UltraMemory?
 
 Most AI agents have amnesia. They forget everything the moment you start a new chat.
 
