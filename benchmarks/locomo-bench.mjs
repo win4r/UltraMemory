@@ -49,7 +49,8 @@ function getArg(name, fallback) {
 const hasFlag = (name) => args.includes(`--${name}`);
 
 const MAX_SAMPLES = parseInt(getArg("samples", "10"));
-const TOP_K = parseInt(getArg("top-k", "5"));
+const TOP_K = parseInt(getArg("top-k", "10"));
+const MAX_QA = parseInt(getArg("max-qa", "0")) || Infinity;
 const CATEGORY_FILTER = getArg("category", null);
 const DRY_RUN = hasFlag("dry-run");
 const VERBOSE = hasFlag("verbose");
@@ -126,27 +127,51 @@ async function ingestConversation(service, conversation, sampleId) {
   const turns = extractConversationTurns(conversation);
   let ingested = 0;
 
-  // Batch turns into chunks of ~3-5 turns for meaningful memory units
-  const CHUNK_SIZE = 4;
-  for (let i = 0; i < turns.length; i += CHUNK_SIZE) {
-    const chunk = turns.slice(i, i + CHUNK_SIZE);
-    const text = chunk
-      .map((t) => `[${t.sessionDate}] ${t.speaker}: ${t.text}`)
-      .join("\n");
+  // Strategy: 2-turn sliding window (speaker A + speaker B as a dialogue pair)
+  // Each memory includes session date + speaker names for temporal grounding.
+  // Also ingest a per-session summary for cross-session questions.
 
-    if (text.trim().length < 20) continue;
+  // Pass 1: dialogue pairs (consecutive turns within same session)
+  let i = 0;
+  while (i < turns.length) {
+    const t = turns[i];
+    // Pair with next turn if same session
+    const next = turns[i + 1];
+    let text;
+    if (next && next.sessionKey === t.sessionKey) {
+      text = `[${t.sessionDate}] ${t.speaker}: ${t.text}\n${next.speaker}: ${next.text}`;
+      i += 2;
+    } else {
+      text = `[${t.sessionDate}] ${t.speaker}: ${t.text}`;
+      i += 1;
+    }
+
+    if (text.trim().length < 15) continue;
 
     try {
-      await service.store({
-        text,
-        category: "fact",
-        scope: "global",
-        importance: 0.7,
-      });
+      await service.store({ text, category: "fact", scope: "global", importance: 0.7 });
       ingested++;
     } catch (err) {
-      // Embedding errors are expected for very short text
       if (VERBOSE) console.error(`  Ingest error: ${err.message}`);
+    }
+  }
+
+  // Pass 2: per-session summaries (concatenate all turns, truncate to ~2000 chars)
+  const sessionKeys = [...new Set(turns.map((t) => t.sessionKey))];
+  for (const sk of sessionKeys) {
+    const sessionTurns = turns.filter((t) => t.sessionKey === sk);
+    if (sessionTurns.length === 0) continue;
+    const date = sessionTurns[0].sessionDate;
+    const summary = sessionTurns
+      .map((t) => `${t.speaker}: ${t.text}`)
+      .join("\n")
+      .slice(0, 2000);
+    const text = `[Session ${sk} on ${date}]\n${summary}`;
+    try {
+      await service.store({ text, category: "fact", scope: "global", importance: 0.8 });
+      ingested++;
+    } catch (err) {
+      if (VERBOSE) console.error(`  Ingest session summary error: ${err.message}`);
     }
   }
 
@@ -164,9 +189,9 @@ async function askLLM(question, context, model) {
     baseURL: LLM_BASE_URL,
   });
 
-  const systemPrompt = `You are a helpful assistant answering questions about a long conversation between two people. Use ONLY the provided memory context to answer. If the answer is not in the context, say "I don't know" or "unanswerable". Be concise and factual.`;
+  const systemPrompt = `You are answering factual questions about a long conversation between two people. Answer based on the retrieved memory fragments below. Each fragment has a timestamp in brackets. Be concise — answer with just the key fact (a name, date, place, or short phrase). If the answer requires inference from dates (e.g., "yesterday" relative to the timestamp), do the math. If truly unanswerable, say "unanswerable".`;
 
-  const userPrompt = `Memory context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`;
+  const userPrompt = `Retrieved memories:\n${context}\n\nQuestion: ${question}\n\nAnswer (concise, factual):`;
 
   try {
     const controller = new AbortController();
@@ -278,9 +303,12 @@ async function runBenchmark() {
     }
 
     // Evaluate QA
-    const qaList = CATEGORY_FILTER
+    const qaAll = CATEGORY_FILTER
       ? sample.qa.filter((q) => String(q.category) === CATEGORY_FILTER)
       : sample.qa;
+    const qaRemaining = MAX_QA - allResults.length;
+    const qaList = qaRemaining < qaAll.length ? qaAll.slice(0, qaRemaining) : qaAll;
+    if (qaRemaining <= 0) break;
 
     let correct = 0;
     let total = 0;
