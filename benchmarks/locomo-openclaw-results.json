@@ -1,0 +1,84 @@
+{
+  "method": "openclaw-plugin-jiti",
+  "plugin": "memory-lancedb-pro",
+  "embedding": "text-embedding-v4",
+  "llm": "qwen3.5-flash",
+  "retrieval": "hybrid",
+  "results": [
+    {
+      "question": "When did Caroline go to the LGBTQ support group?",
+      "groundTruth": "7 May 2023",
+      "prediction": "7 May, 2023",
+      "f1": 1,
+      "category": "2"
+    },
+    {
+      "question": "When did Melanie paint a sunrise?",
+      "groundTruth": "2022",
+      "prediction": "2022",
+      "f1": 1,
+      "category": "2"
+    },
+    {
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "groundTruth": "Psychology, counseling certification",
+      "prediction": "Counseling and mental health.",
+      "f1": 0.28571428571428575,
+      "category": "3"
+    },
+    {
+      "question": "What did Caroline research?",
+      "groundTruth": "Adoption agencies",
+      "prediction": "Adoption agencies or lawyers.",
+      "f1": 0.6666666666666666,
+      "category": "1"
+    },
+    {
+      "question": "What is Caroline's identity?",
+      "groundTruth": "Transgender woman",
+      "prediction": "Caroline is transgender.",
+      "f1": 0.4,
+      "category": "1"
+    },
+    {
+      "question": "When did Melanie run a charity race?",
+      "groundTruth": "The sunday before 25 May 2023",
+      "prediction": "20 May, 2023",
+      "f1": 0.4444444444444444,
+      "category": "2"
+    },
+    {
+      "question": "When is Melanie planning on going camping?",
+      "groundTruth": "June 2023",
+      "prediction": "June 2023",
+      "f1": 1,
+      "category": "2"
+    },
+    {
+      "question": "What is Caroline's relationship status?",
+      "groundTruth": "Single",
+      "prediction": "unanswerable",
+      "f1": 0,
+      "category": "1"
+    },
+    {
+      "question": "When did Caroline give a speech at a school?",
+      "groundTruth": "The week before 9 June 2023",
+      "prediction": "unanswerable",
+      "f1": 0,
+      "category": "2"
+    },
+    {
+      "question": "When did Caroline meet up with her friends, family, and mentors?",
+      "groundTruth": "The week before 9 June 2023",
+      "prediction": "Approximately one week before 9 June, 2023",
+      "f1": 0.7692307692307692,
+      "category": "2"
+    }
+  ],
+  "summary": {
+    "n": 10,
+    "meanF1": 0.5566056166056166,
+    "accAt05": 0.5
+  }
+}
