@@ -1,0 +1,18 @@
+{
+  "name": "@ultramemory/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.26.2",
+    "@sinclair/typebox": "0.34.48",
+    "apache-arrow": "18.1.0",
+    "json5": "^2.2.3",
+    "openai": "^6.21.0",
+    "proper-lockfile": "^4.1.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

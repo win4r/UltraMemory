@@ -1,0 +1,17 @@
+{
+  "name": "@ultramemory/openclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "license": "MIT",
+  "dependencies": {
+    "@ultramemory/core": "workspace:*",
+    "@ultramemory/server": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
