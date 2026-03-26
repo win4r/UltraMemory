@@ -8,21 +8,21 @@
     {
       "question": "When did Caroline go to the LGBTQ support group?",
       "groundTruth": "7 May 2023",
-      "prediction": "7 May, 2023",
-      "f1": 1,
+      "prediction": "unanswerable",
+      "f1": 0,
       "category": "2"
     },
     {
       "question": "When did Melanie paint a sunrise?",
       "groundTruth": "2022",
-      "prediction": "2022",
-      "f1": 1,
+      "prediction": "In 2022",
+      "f1": 0.6666666666666666,
       "category": "2"
     },
     {
       "question": "What fields would Caroline be likely to pursue in her educaton?",
       "groundTruth": "Psychology, counseling certification",
-      "prediction": "Counseling and mental health.",
+      "prediction": "Counseling and mental health",
       "f1": 0.28571428571428575,
       "category": "3"
     },
@@ -43,7 +43,7 @@
     {
       "question": "When did Melanie run a charity race?",
       "groundTruth": "The sunday before 25 May 2023",
-      "prediction": "20 May, 2023",
+      "prediction": "May 20, 2023",
       "f1": 0.4444444444444444,
       "category": "2"
     },
@@ -57,7 +57,7 @@
     {
       "question": "What is Caroline's relationship status?",
       "groundTruth": "Single",
-      "prediction": "unanswerable",
+      "prediction": "",
       "f1": 0,
       "category": "1"
     },
@@ -71,14 +71,14 @@
     {
       "question": "When did Caroline meet up with her friends, family, and mentors?",
       "groundTruth": "The week before 9 June 2023",
-      "prediction": "Approximately one week before 9 June, 2023",
-      "f1": 0.7692307692307692,
+      "prediction": "Early June 2023",
+      "f1": 0.4444444444444444,
       "category": "2"
     }
   ],
   "summary": {
     "n": 10,
-    "meanF1": 0.5566056166056166,
-    "accAt05": 0.5
+    "meanF1": 0.3907936507936508,
+    "accAt05": 0.3
   }
 }

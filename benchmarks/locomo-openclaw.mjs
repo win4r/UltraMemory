@@ -141,7 +141,11 @@ async function main() {
     autoCapture: false,
     autoRecall: false,
     smartExtraction: false,
-    retrieval: { mode: "hybrid", vectorWeight: 0.7, bm25Weight: 0.3, minScore: 0.1, hardMinScore: 0.1, rerank: "none" },
+    retrieval: {
+      mode: "hybrid", vectorWeight: 0.7, bm25Weight: 0.3, minScore: 0.1, hardMinScore: 0.1,
+      rerank: "none", // Jina reranker tested but hurts LoCoMo temporal QA (50%→30%)
+      candidatePoolSize: 20,
+    },
     sessionMemory: { enabled: false },
     sessionStrategy: "none",
     scopes: { default: "global" },
