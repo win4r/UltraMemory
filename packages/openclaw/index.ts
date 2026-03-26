@@ -6,7 +6,7 @@
  */
 
 import { MemoryService, resolveConfig, type UltraMemoryConfig } from "@ultramemory/server";
-import { createOpenClawAdapter, type OpenClawPluginApi } from "./src/adapter.js";
+import { createOpenClawAdapter, type OpenClawPluginApi, type AdapterConfig } from "./src/adapter.js";
 
 export default {
   id: "ultramemory",
@@ -55,6 +55,8 @@ export default {
           autoRecallMaxItems: rawConfig.autoRecallMaxItems as number | undefined,
           autoRecallMaxChars: rawConfig.autoRecallMaxChars as number | undefined,
           autoCapture: rawConfig.autoCapture !== false,
+          selfImprovement: rawConfig.selfImprovement === true,
+          memoryReflection: rawConfig.memoryReflection === true,
         });
       })
       .catch((err) => {

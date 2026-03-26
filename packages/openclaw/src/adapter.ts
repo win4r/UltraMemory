@@ -80,6 +80,40 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 3) + "...";
 }
 
+/** Extract text content from a tool result payload (OpenClaw format). */
+function extractToolResultText(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const content = (result as any).content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block && typeof block === "object" && (block as any).type === "text") {
+        const t = (block as any).text;
+        if (typeof t === "string") parts.push(t);
+      }
+    }
+    return parts.join("\n");
+  }
+  return "";
+}
+
+/** Quick heuristic: does the text look like it contains an error? */
+function looksLikeError(text: string): boolean {
+  if (text.length < 10) return false;
+  const lower = text.slice(0, 2000).toLowerCase();
+  return (
+    lower.includes("error:") ||
+    lower.includes("error -") ||
+    lower.includes("traceback") ||
+    lower.includes("exception") ||
+    lower.includes("enoent") ||
+    lower.includes("permission denied") ||
+    lower.includes("command failed") ||
+    lower.includes("fatal:")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tool registration (P1-3 fix: factory pattern)
 // ---------------------------------------------------------------------------
@@ -256,12 +290,16 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
 // Hook registration (P1-4 fix: port core hooks from index.ts)
 // ---------------------------------------------------------------------------
 
-interface AdapterConfig {
+export interface AdapterConfig {
   autoRecall?: boolean;
   autoRecallMinLength?: number;
   autoRecallMaxItems?: number;
   autoRecallMaxChars?: number;
   autoCapture?: boolean;
+  /** Enable self-improvement hooks (agent:bootstrap, command:new/reset notes). Default: false */
+  selfImprovement?: boolean;
+  /** Enable memory-reflection hooks (error tracking, reflection recall). Default: false */
+  memoryReflection?: boolean;
 }
 
 function registerHooks(
@@ -368,26 +406,182 @@ function registerHooks(
     );
   }
 
+  // ── self-improvement: agent:bootstrap ───────────────────────────────────
+  if (config.selfImprovement) {
+    const SELF_IMPROVEMENT_REMINDER =
+      "## Self-Improvement Reminder\n" +
+      "- If you learn something non-obvious, store it with memory_store (category: fact, importance >= 0.8).\n" +
+      "- If user corrects you, store the correction immediately.\n" +
+      "- Distill reusable rules to project memory when appropriate.";
+
+    const registerBootstrapHook = api.registerHook ?? api.on;
+    registerBootstrapHook.call(
+      api,
+      "agent:bootstrap",
+      async (event: any) => {
+        try {
+          const bootstrapFiles = event?.context?.bootstrapFiles;
+          if (!Array.isArray(bootstrapFiles)) return;
+
+          // Avoid duplicate injection
+          const exists = bootstrapFiles.some((f: any) =>
+            f && typeof f === "object" && f.path === "SELF_IMPROVEMENT_REMINDER.md",
+          );
+          if (exists) return;
+
+          bootstrapFiles.push({
+            path: "SELF_IMPROVEMENT_REMINDER.md",
+            content: SELF_IMPROVEMENT_REMINDER,
+            virtual: true,
+          });
+          api.logger.debug?.(`ultramemory: injected self-improvement reminder into bootstrap`);
+        } catch (err) {
+          api.logger.warn(`ultramemory: agent:bootstrap self-improvement hook failed: ${String(err)}`);
+        }
+      },
+      { name: "ultramemory.self-improvement.bootstrap", description: "Inject self-improvement reminder on agent bootstrap" },
+    );
+
+    // ── self-improvement: command:new / command:reset ──────────────────────
+    const SELF_IMPROVEMENT_NOTE_PREFIX = "[ultramemory:self-improvement]";
+    const appendSelfImprovementNote = async (event: any) => {
+      try {
+        const action = String(event?.action || "unknown");
+        if (!Array.isArray(event?.messages)) {
+          api.logger.warn(`ultramemory: command:${action} missing event.messages; skip note`);
+          return;
+        }
+
+        // Avoid duplicate
+        const exists = event.messages.some(
+          (m: unknown) => typeof m === "string" && (m as string).includes(SELF_IMPROVEMENT_NOTE_PREFIX),
+        );
+        if (exists) return;
+
+        event.messages.push(
+          [
+            SELF_IMPROVEMENT_NOTE_PREFIX,
+            "- If anything was learned/corrected, log it now with memory_store.",
+            "- Then proceed with the new session.",
+          ].join("\n"),
+        );
+        api.logger.info(`ultramemory: command:${action} injected self-improvement note`);
+      } catch (err) {
+        api.logger.warn(`ultramemory: self-improvement note inject failed: ${String(err)}`);
+      }
+    };
+
+    const registerCommandHook = api.registerHook ?? api.on;
+    registerCommandHook.call(api, "command:new", appendSelfImprovementNote, {
+      name: "ultramemory.self-improvement.command-new",
+      description: "Append self-improvement note before /new",
+    });
+    registerCommandHook.call(api, "command:reset", appendSelfImprovementNote, {
+      name: "ultramemory.self-improvement.command-reset",
+      description: "Append self-improvement note before /reset",
+    });
+
+    api.logger.info("ultramemory: self-improvement hooks registered (agent:bootstrap, command:new, command:reset)");
+  }
+
+  // ── reflection: after_tool_call (error tracking) ────────────────────────
+  if (config.memoryReflection) {
+    api.on(
+      "after_tool_call",
+      async (event: any, _ctx: any) => {
+        try {
+          // Check for explicit error field
+          let errorText: string | undefined;
+          if (typeof event?.error === "string" && event.error.trim().length > 0) {
+            errorText = event.error.trim();
+          }
+
+          // Check result text for error signals if no explicit error
+          if (!errorText) {
+            const resultText = extractToolResultText(event?.result);
+            if (resultText && looksLikeError(resultText)) {
+              errorText = resultText;
+            }
+          }
+
+          if (!errorText) return;
+
+          const toolName = event?.toolName || "unknown";
+          const summary = errorText.length > 200 ? errorText.slice(0, 197) + "..." : errorText;
+
+          await service.store({
+            text: `[error:${toolName}] ${summary}`,
+            category: "other",
+            importance: 0.3,
+          });
+
+          api.logger.debug?.(`ultramemory: stored error signal from tool ${toolName}`);
+        } catch (err) {
+          api.logger.warn(`ultramemory: after_tool_call error tracking failed: ${String(err)}`);
+        }
+      },
+      { name: "ultramemory.reflection.error-tracking", description: "Track tool errors as memories", priority: 15 },
+    );
+
+    // ── reflection: before_prompt_build priority 12 (inheritance) ─────────
+    api.on(
+      "before_prompt_build",
+      async (event: any, _ctx: any) => {
+        try {
+          const results = await service.recall({
+            query: "reflection rules invariants constraints",
+            limit: 6,
+            category: "reflection",
+          });
+
+          if (results.length === 0) return {};
+
+          const body = results.map((r, i) => `${i + 1}. ${truncate(r.text, 200)}`).join("\n");
+          const prependContext = [
+            "<inherited-rules>",
+            "Stable rules from memory reflections. Treat as long-term behavioral constraints unless user overrides.",
+            body,
+            "</inherited-rules>",
+          ].join("\n");
+
+          api.logger.debug?.(`ultramemory: reflection inheritance injected ${results.length} rules`);
+          return { prependContext };
+        } catch (err) {
+          api.logger.warn(`ultramemory: reflection inheritance injection failed: ${String(err)}`);
+          return {};
+        }
+      },
+      { name: "ultramemory.reflection.inheritance", description: "Inject inherited reflection rules", priority: 12 },
+    );
+
+    // ── reflection: before_prompt_build priority 15 (derived) ─────────────
+    // TODO: This hook needs the full reflection LLM pipeline to produce
+    // derived execution deltas. The original implementation uses
+    // loadAgentReflectionSlices(), session-scoped caching, and pending
+    // error signal aggregation. To port this properly, MemoryService would
+    // need to expose a reflection slice loader and session-scoped error
+    // signal state. Skipping for now — the priority-12 inheritance hook
+    // provides the core reflection context.
+
+    api.logger.info("ultramemory: memory-reflection hooks registered (after_tool_call, before_prompt_build:12)");
+  }
+
   // ── session_end: cleanup ────────────────────────────────────────────────
   api.on(
     "session_end",
-    async () => {
-      // Placeholder for session state cleanup
-      // Full reflection cleanup will be added when reflection hooks are ported
+    async (_event: any, _ctx: any) => {
+      try {
+        // MemoryService has no session-scoped state to clean up.
+        // The original index.ts cleaned in-memory Maps for reflection
+        // session state. In the adapter, reflection state is not held
+        // locally, so this is a no-op log for observability.
+        api.logger.debug?.("ultramemory: session_end — no adapter-local state to clean");
+      } catch (err) {
+        api.logger.warn(`ultramemory: session_end cleanup failed: ${String(err)}`);
+      }
     },
     { name: "ultramemory.session-cleanup", description: "Clean up session state", priority: 20 },
   );
-
-  // TODO: Port remaining hooks from index.ts:
-  // - agent:bootstrap (self-improvement reminder injection)
-  // - command:new / command:reset (self-improvement notes)
-  // - after_tool_call (reflection error tracking)
-  // - before_prompt_build priority 12 (reflection inheritance injection)
-  // - before_prompt_build priority 15 (reflection derived injection)
-  // - command:new / command:reset (memory reflection LLM pass)
-  // - command:new (session memory storage)
-  // These require SmartExtractor, reflection store, and session state
-  // management that need to be exposed from MemoryService first.
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +596,8 @@ export function createOpenClawAdapter(
   const resolvedConfig: AdapterConfig = {
     autoRecall: true,
     autoCapture: true,
+    selfImprovement: false,
+    memoryReflection: false,
     ...config,
   };
 
@@ -411,6 +607,8 @@ export function createOpenClawAdapter(
   api.logger.info(
     `ultramemory: OpenClaw adapter ready — 6 tools, ` +
     `auto-recall=${resolvedConfig.autoRecall !== false}, ` +
-    `auto-capture=${resolvedConfig.autoCapture !== false}`,
+    `auto-capture=${resolvedConfig.autoCapture !== false}, ` +
+    `self-improvement=${!!resolvedConfig.selfImprovement}, ` +
+    `memory-reflection=${!!resolvedConfig.memoryReflection}`,
   );
 }

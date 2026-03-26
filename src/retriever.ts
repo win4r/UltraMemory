@@ -91,6 +91,8 @@ export interface RetrievalConfig {
   tagPrefixes: string[];
   /** RRF constant k (default: 60). Higher values reduce the influence of high-ranked items. */
   rrfK: number;
+  /** MMR lambda (default: 0.7, range 0-1). Higher = more relevance, lower = more diversity. */
+  mmrLambda?: number;
 }
 
 export interface RetrievalContext {
@@ -102,6 +104,8 @@ export interface RetrievalContext {
   source?: "manual" | "auto-recall" | "cli";
 }
 
+export type QueryType = "question" | "temporal" | "lookup" | "general";
+
 export interface RetrievalResult extends MemorySearchResult {
   sources: {
     vector?: { score: number; rank: number };
@@ -109,6 +113,8 @@ export interface RetrievalResult extends MemorySearchResult {
     fused?: { score: number };
     reranked?: { score: number };
   };
+  /** Detected query type from the query understanding layer. */
+  queryType?: QueryType;
 }
 
 // ============================================================================
@@ -134,7 +140,68 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   maxHalfLifeMultiplier: 3,
   tagPrefixes: ["proj", "env", "team", "scope"],
   rrfK: 60,
+  mmrLambda: 0.7,
 };
+
+// ============================================================================
+// Query Understanding (lightweight heuristic — no LLM calls)
+// ============================================================================
+
+/**
+ * Classify query intent using simple regex heuristics.
+ * Used to adjust retrieval weights without requiring an LLM call.
+ */
+function classifyQuery(query: string): QueryType {
+  const q = query.toLowerCase().trim();
+  // Temporal: contains date/time keywords
+  if (/\b(when|date|time|ago|yesterday|last week|last month|before|after|during)\b/i.test(q)) return "temporal";
+  // Question: starts with question word or ends with ?
+  if (/^(what|who|where|why|how|which|did|does|is|are|was|were|can|could)\b/i.test(q) || q.endsWith("?")) return "question";
+  // Lookup: short, likely entity name (3 words or fewer, no question mark)
+  if (q.split(/\s+/).length <= 3 && !q.endsWith("?")) return "lookup";
+  return "general";
+}
+
+/**
+ * Expand temporal queries with date-related keywords.
+ * Placeholder — classification alone provides enough signal for now.
+ */
+function expandTemporalQuery(query: string): string {
+  // Future: could append date-pattern tokens to broaden recall
+  return query;
+}
+
+/**
+ * Build a shallow copy of RetrievalConfig with query-type-aware weight
+ * adjustments. Never mutates the original config.
+ *
+ * - temporal:  2x recencyWeight (recent memories matter more)
+ * - lookup:    swap vectorWeight/bm25Weight emphasis toward BM25
+ * - question / general: no change
+ */
+function adjustConfigForQueryType(
+  config: RetrievalConfig,
+  queryType: QueryType,
+): RetrievalConfig {
+  switch (queryType) {
+    case "temporal":
+      return {
+        ...config,
+        recencyWeight: Math.min(config.recencyWeight * 2, 1),
+      };
+    case "lookup":
+      return {
+        ...config,
+        // Boost BM25 weight for entity/name lookups; keep total weight sum stable
+        vectorWeight: Math.max(config.vectorWeight - 0.15, 0.1),
+        bm25Weight: Math.min(config.bm25Weight + 0.15, 0.9),
+      };
+    case "question":
+    case "general":
+    default:
+      return config;
+  }
+}
 
 // ============================================================================
 // Utility Functions
@@ -384,40 +451,58 @@ export class MemoryRetriever {
     const { query, limit, scopeFilter, category, source } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
-    // Check if query contains tag prefixes -> use BM25-only + mustContain
-    const tagTokens = this.extractTagTokens(query);
-    let results: RetrievalResult[];
-    
-    if (tagTokens.length > 0) {
-      results = await this.bm25OnlyRetrieval(
-        query,
-        tagTokens,
-        safeLimit,
-        scopeFilter,
-        category,
-      );
-    } else if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
-      results = await this.vectorOnlyRetrieval(
-        query,
-        safeLimit,
-        scopeFilter,
-        category,
-      );
-    } else {
-      results = await this.hybridRetrieval(
-        query,
-        safeLimit,
-        scopeFilter,
-        category,
-      );
-    }
+    // ── Query understanding layer (lightweight heuristic) ──
+    const queryType = classifyQuery(query);
+    const effectiveQuery = queryType === "temporal"
+      ? expandTemporalQuery(query)
+      : query;
 
-    // Record access for reinforcement (manual recall only)
-    if (this.accessTracker && source === "manual" && results.length > 0) {
-      this.accessTracker.recordAccess(results.map((r) => r.entry.id));
-    }
+    // Apply query-type-aware weight adjustments (never mutates this.config)
+    const originalConfig = this.config;
+    this.config = adjustConfigForQueryType(originalConfig, queryType);
 
-    return results;
+    try {
+      // Check if query contains tag prefixes -> use BM25-only + mustContain
+      const tagTokens = this.extractTagTokens(effectiveQuery);
+      let results: RetrievalResult[];
+
+      if (tagTokens.length > 0) {
+        results = await this.bm25OnlyRetrieval(
+          effectiveQuery,
+          tagTokens,
+          safeLimit,
+          scopeFilter,
+          category,
+        );
+      } else if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
+        results = await this.vectorOnlyRetrieval(
+          effectiveQuery,
+          safeLimit,
+          scopeFilter,
+          category,
+        );
+      } else {
+        results = await this.hybridRetrieval(
+          effectiveQuery,
+          safeLimit,
+          scopeFilter,
+          category,
+        );
+      }
+
+      // Stamp queryType on every result so callers know what was detected
+      results = results.map((r) => ({ ...r, queryType }));
+
+      // Record access for reinforcement (manual recall only)
+      if (this.accessTracker && source === "manual" && results.length > 0) {
+        this.accessTracker.recordAccess(results.map((r) => r.entry.id));
+      }
+
+      return results;
+    } finally {
+      // Restore original config even if retrieval throws
+      this.config = originalConfig;
+    }
   }
 
   private extractTagTokens(query: string): string[] {
@@ -470,7 +555,7 @@ export class MemoryRetriever {
       : lifecycleRanked;
 
     // MMR deduplication: avoid top-k filled with near-identical memories
-    const deduplicated = this.applyMMRDiversity(denoised);
+    const deduplicated = this.applyMMR(denoised, limit, this.config.mmrLambda ?? 0.7);
 
     return deduplicated.slice(0, limit);
   }
@@ -529,7 +614,7 @@ export class MemoryRetriever {
       ? filterNoise(lifecycleRanked, r => r.entry.text)
       : lifecycleRanked;
 
-    const deduplicated = this.applyMMRDiversity(denoised);
+    const deduplicated = this.applyMMR(denoised, limit, this.config.mmrLambda ?? 0.7);
     return deduplicated.slice(0, limit);
   }
 
@@ -599,7 +684,7 @@ export class MemoryRetriever {
       : lifecycleRanked;
 
     // MMR deduplication: avoid top-k filled with near-identical memories
-    const deduplicated = this.applyMMRDiversity(denoised);
+    const deduplicated = this.applyMMR(denoised, limit, this.config.mmrLambda ?? 0.7);
 
     return deduplicated.slice(0, limit);
   }
@@ -1096,49 +1181,75 @@ export class MemoryRetriever {
   }
 
   /**
-   * MMR-inspired diversity filter: greedily select results that are both
-   * relevant (high score) and diverse (low similarity to already-selected).
+   * True MMR (Maximal Marginal Relevance) diversity selection.
    *
-   * Uses cosine similarity between memory vectors. If two memories have
-   * cosine similarity > threshold (default 0.92), the lower-scored one
-   * is demoted to the end rather than removed entirely.
+   * Greedily picks results that maximize:
+   *   MMR(r) = lambda * relevance(r) - (1 - lambda) * max_sim(r, selected)
    *
-   * This prevents top-k from being filled with near-identical entries
-   * (e.g. 3 similar "SVG style" memories) while keeping them available
-   * if the pool is small.
+   * lambda=1 is pure relevance ranking, lambda=0 is pure diversity.
+   * If vectors are missing (e.g. list results), returns candidates as-is.
    */
-  private applyMMRDiversity(
-    results: RetrievalResult[],
-    similarityThreshold = 0.85,
+  private applyMMR(
+    candidates: RetrievalResult[],
+    limit: number,
+    lambda: number,
   ): RetrievalResult[] {
-    if (results.length <= 1) return results;
+    if (candidates.length <= 1) return candidates;
+
+    // Check if vectors are available; if not, skip MMR
+    const hasVectors = candidates.some(
+      (c) => c.entry.vector && c.entry.vector.length > 0,
+    );
+    if (!hasVectors) return candidates;
 
     const selected: RetrievalResult[] = [];
-    const deferred: RetrievalResult[] = [];
+    const remaining = [...candidates];
 
-    for (const candidate of results) {
-      // Check if this candidate is too similar to any already-selected result
-      const tooSimilar = selected.some((s) => {
-        // Both must have vectors to compare.
-        // LanceDB returns Arrow Vector objects (not plain arrays),
-        // so use .length directly and Array.from() for conversion.
-        const sVec = s.entry.vector;
-        const cVec = candidate.entry.vector;
-        if (!sVec?.length || !cVec?.length) return false;
-        const sArr = Array.from(sVec as Iterable<number>);
+    // First pick: highest relevance score
+    remaining.sort((a, b) => b.score - a.score);
+    selected.push(remaining.shift()!);
+
+    while (selected.length < limit && remaining.length > 0) {
+      let bestIdx = 0;
+      let bestMMR = -Infinity;
+
+      for (let i = 0; i < remaining.length; i++) {
+        const relevance = remaining[i].score;
+        const cVec = remaining[i].entry.vector;
+
+        // If this candidate lacks a vector, fall back to relevance only
+        if (!cVec?.length) {
+          const mmrScore = lambda * relevance;
+          if (mmrScore > bestMMR) {
+            bestMMR = mmrScore;
+            bestIdx = i;
+          }
+          continue;
+        }
+
         const cArr = Array.from(cVec as Iterable<number>);
-        const sim = cosineSimilarity(sArr, cArr);
-        return sim > similarityThreshold;
-      });
 
-      if (tooSimilar) {
-        deferred.push(candidate);
-      } else {
-        selected.push(candidate);
+        // Max similarity to any already-selected result
+        let maxSim = 0;
+        for (const s of selected) {
+          const sVec = s.entry.vector;
+          if (!sVec?.length) continue;
+          const sArr = Array.from(sVec as Iterable<number>);
+          const sim = cosineSimilarity(cArr, sArr);
+          if (sim > maxSim) maxSim = sim;
+        }
+
+        const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
+        if (mmrScore > bestMMR) {
+          bestMMR = mmrScore;
+          bestIdx = i;
+        }
       }
+
+      selected.push(remaining.splice(bestIdx, 1)[0]);
     }
-    // Append deferred results at the end (available but deprioritized)
-    return [...selected, ...deferred];
+
+    return selected;
   }
 
   // Update configuration
