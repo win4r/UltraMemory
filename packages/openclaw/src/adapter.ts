@@ -115,6 +115,14 @@ function looksLikeError(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Readiness guard — returns an error result if service is not yet initialized
+// ---------------------------------------------------------------------------
+
+const NOT_READY_RESULT = {
+  content: [{ type: "text" as const, text: "UltraMemory is still initializing. Please try again in a moment." }],
+};
+
+// ---------------------------------------------------------------------------
 // Tool registration (P1-3 fix: factory pattern)
 // ---------------------------------------------------------------------------
 
@@ -132,6 +140,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         scope: Type.Optional(Type.String({ description: "Memory scope" })),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const result = await service.store({
           text: String(a.text ?? ""),
@@ -160,6 +169,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         category: Type.Optional(stringEnum([...CATEGORIES])),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const results = await service.recall({
           query: String(a.query ?? ""),
@@ -193,6 +203,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         category: Type.Optional(stringEnum([...CATEGORIES])),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const result = await service.update({
           id: String(a.memoryId ?? ""),
@@ -216,6 +227,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         id: Type.String({ description: "Memory ID to delete" }),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const result = await service.forget({ id: String(a.id ?? "") });
         return formatResult(result);
@@ -237,6 +249,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         category: Type.Optional(stringEnum([...CATEGORIES])),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const entries = await service.list({
           scopeFilter: a.scope ? [String(a.scope)] : undefined,
@@ -267,6 +280,7 @@ function registerTools(api: OpenClawPluginApi, service: MemoryService): void {
         scope: Type.Optional(Type.String({ description: "Filter by scope" })),
       }),
       async execute(_toolCallId, params) {
+        if (!service.isReady()) return NOT_READY_RESULT;
         const a = params as Args;
         const scopeFilter = a.scope ? [String(a.scope)] : undefined;
         const stats = await service.stats(scopeFilter);
@@ -318,6 +332,7 @@ function registerHooks(
       "before_prompt_build",
       async (event: any, _ctx: any) => {
         try {
+          if (!service.isReady()) return {};
           const prompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
           if (prompt.length < minLength) return {};
 
@@ -361,6 +376,7 @@ function registerHooks(
       async (event: any, ctx: any) => {
         // Fire-and-forget: don't block agent shutdown
         try {
+          if (!service.isReady()) return;
           if (event?.success === false) return;
 
           const messages = Array.isArray(event?.messages) ? event.messages : [];
@@ -490,6 +506,7 @@ function registerHooks(
       "after_tool_call",
       async (event: any, _ctx: any) => {
         try {
+          if (!service.isReady()) return;
           // Check for explicit error field
           let errorText: string | undefined;
           if (typeof event?.error === "string" && event.error.trim().length > 0) {
@@ -528,6 +545,7 @@ function registerHooks(
       "before_prompt_build",
       async (event: any, _ctx: any) => {
         try {
+          if (!service.isReady()) return {};
           const results = await service.recall({
             query: "reflection rules invariants constraints",
             limit: 6,

@@ -46,21 +46,22 @@ export default {
 
     const service = new MemoryService(config);
 
-    service
-      .initialize()
-      .then(() => {
-        createOpenClawAdapter(api, service, {
-          autoRecall: rawConfig.autoRecall !== false,
-          autoRecallMinLength: rawConfig.autoRecallMinLength as number | undefined,
-          autoRecallMaxItems: rawConfig.autoRecallMaxItems as number | undefined,
-          autoRecallMaxChars: rawConfig.autoRecallMaxChars as number | undefined,
-          autoCapture: rawConfig.autoCapture !== false,
-          selfImprovement: rawConfig.selfImprovement === true,
-          memoryReflection: rawConfig.memoryReflection === true,
-        });
-      })
-      .catch((err) => {
-        api.logger.error(`ultramemory: initialization failed: ${err}`);
-      });
+    // Register hooks SYNCHRONOUSLY so they are available immediately,
+    // even before async initialization completes.  Each hook handler
+    // checks service.isReady() and skips gracefully if not ready yet.
+    createOpenClawAdapter(api, service, {
+      autoRecall: rawConfig.autoRecall !== false,
+      autoRecallMinLength: rawConfig.autoRecallMinLength as number | undefined,
+      autoRecallMaxItems: rawConfig.autoRecallMaxItems as number | undefined,
+      autoRecallMaxChars: rawConfig.autoRecallMaxChars as number | undefined,
+      autoCapture: rawConfig.autoCapture !== false,
+      selfImprovement: rawConfig.selfImprovement === true,
+      memoryReflection: rawConfig.memoryReflection === true,
+    });
+
+    // Start initialization in the background
+    service.initialize().catch((err) => {
+      api.logger.error?.(`ultramemory: initialization failed: ${err}`);
+    });
   },
 };

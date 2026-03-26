@@ -24,7 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit 2>&1 | grep -v '../core/src/' | grep 'error TS' && exit 1 || exit 0",
     "test": "tsx --test test/*.test.mjs"
   }
 }

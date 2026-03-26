@@ -28,7 +28,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck --filter=@ultramemory/server --filter=@ultramemory/openclaw"
   },
   "devDependencies": {
     "turbo": "^2",

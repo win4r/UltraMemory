@@ -61,6 +61,8 @@ export interface RecallParams {
   category?: string;
   /** Content depth: l0 (one-sentence), l1 (bullet list), l2 (full text), full (alias for l2). Default: "full" */
   depth?: "l0" | "l1" | "l2" | "full";
+  /** Recall source: "manual" (user-triggered) or "auto" (system auto-recall). Only manual recalls reinforce access count. Default: "manual" */
+  source?: "manual" | "auto";
 }
 
 export interface ScoringTrace {
@@ -317,15 +319,17 @@ export class MemoryService {
       category,
     });
 
-    // Update access metadata for each result (fire-and-forget)
-    const now = Date.now();
-    for (const r of results) {
-      const meta = parseSmartMetadata(r.entry.metadata, r.entry);
-      this._store.patchMetadata(
-        r.entry.id,
-        { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
-        scopeFilter,
-      ).catch(() => {});
+    // Update access metadata only for manual recalls (not auto-recall)
+    if (params.source !== "auto") {
+      const now = Date.now();
+      for (const r of results) {
+        const meta = parseSmartMetadata(r.entry.metadata, r.entry);
+        this._store.patchMetadata(
+          r.entry.id,
+          { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
+          scopeFilter,
+        ).catch(() => {});
+      }
     }
 
     const depth = params.depth || "full";
@@ -383,6 +387,31 @@ export class MemoryService {
     if (params.text !== undefined) {
       updates.text = params.text;
       updates.vector = await this.embedder.embedPassage(params.text);
+
+      // Regenerate L0/L1/L2 metadata to match new text so recall with
+      // depth=l0/l1/l2 returns up-to-date summaries.
+      let existingMeta: Record<string, unknown> = {};
+      try {
+        const existing = await this._store.getById(params.id);
+        if (existing?.metadata) {
+          existingMeta = parseSmartMetadata(existing.metadata, existing) as unknown as Record<string, unknown>;
+        }
+      } catch {
+        // fail-open: rebuild metadata from scratch if lookup fails
+      }
+      const updatedMeta = {
+        ...existingMeta,
+        l0_abstract: params.text.slice(0, 200),
+        l1_overview: `- ${params.text.slice(0, 1000)}`,
+        l2_content: params.text,
+      };
+      updates.metadata = stringifySmartMetadata(
+        buildSmartMetadata(
+          { text: params.text, category: undefined, importance: undefined },
+          updatedMeta as any,
+        ),
+      );
+
       fieldsUpdated.push("text");
     }
     if (params.importance !== undefined) {
