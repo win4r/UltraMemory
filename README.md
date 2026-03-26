@@ -95,11 +95,11 @@ npx @ultramemory/server serve --mcp --http --port 1933
 - [x] **Disk-full handling in store layer** — ENOSPC → clear error message
 - [x] **FTS index failure recovery** — Skips O(n) lexical fallback on datasets > 10K rows
 
-### P2 — Competitiveness
+### P2 — Competitiveness (3/5 done)
 
-- [ ] **Complete OpenClaw hook migration** — 7 hooks remain as TODO: `agent:bootstrap`, `command:new/reset` (self-improvement), `after_tool_call` (reflection error tracking), `before_prompt_build` priority 12/15 (reflection injection), full memory reflection LLM pass
-- [ ] **True MMR diversity** — Current implementation defers similar results but lacks the `λ × relevance - (1-λ) × diversity` tradeoff formula
-- [ ] **Query understanding layer** — No query classification (question vs statement), no query expansion, no multi-hop reasoning
+- [x] **OpenClaw hook migration** — 5/7 hooks ported: agent:bootstrap, command:new/reset, after_tool_call, before_prompt_build×2. Remaining: full reflection LLM pass
+- [x] **True MMR diversity** — `λ×relevance - (1-λ)×max_sim`, mmrLambda configurable (default 0.7)
+- [x] **Query understanding layer** — Heuristic classification (temporal/question/lookup/general), auto-adjusts retrieval weights
 - [ ] **Run full LoCoMo benchmark** — 1,986 QA across 10 conversations; current 10-QA sample shows 50% Acc vs OpenViking's 52%
 - [ ] **Python SDK** — Expand adoption beyond Node.js ecosystem
 
