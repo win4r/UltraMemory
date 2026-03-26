@@ -169,6 +169,8 @@ async function askLLM(question, context, model) {
   const userPrompt = `Memory context:\n${context}\n\nQuestion: ${question}\n\nAnswer:`;
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     const resp = await client.chat.completions.create({
       model,
       messages: [
@@ -177,10 +179,11 @@ async function askLLM(question, context, model) {
       ],
       max_tokens: 200,
       temperature: 0,
-    });
+    }, { signal: controller.signal });
+    clearTimeout(timeout);
     return resp.choices[0]?.message?.content?.trim() || "";
   } catch (err) {
-    if (VERBOSE) console.error(`  LLM error: ${err.message}`);
+    console.error(`  LLM error: ${String(err).slice(0, 120)}`);
     return "";
   }
 }
@@ -337,7 +340,10 @@ async function runBenchmark() {
     console.log(`  QA: ${total} questions, F1=${sampleF1.toFixed(3)}, Acc@0.5=${(sampleAcc * 100).toFixed(1)}%`);
 
     await service.shutdown();
-    await rm(tempDir, { recursive: true, force: true });
+    // LanceDB may hold file locks briefly after shutdown — retry cleanup
+    for (let i = 0; i < 3; i++) {
+      try { await rm(tempDir, { recursive: true, force: true }); break; } catch { await new Promise(r => setTimeout(r, 500)); }
+    }
   }
 
   if (DRY_RUN) {
