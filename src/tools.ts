@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
+import type { SmartExtractor } from "./smart-extractor.js";
 import { isNoise } from "./noise-filter.js";
 import { isSystemBypassId, resolveScopeFilter, parseAgentIdFromSessionKey, type MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
@@ -62,6 +63,8 @@ interface ToolContext {
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
+  /** Optional SmartExtractor for session summary generation */
+  extractor?: SmartExtractor;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -566,13 +569,40 @@ export function registerMemoryRecallTool(
             }
           }
 
-          const results = filterUserMdExclusiveRecallResults(await retrieveWithRetry(runtimeContext.retriever, {
+          // ── Core tier auto-inject (GPT-inspired) ──
+          // Core memories are identity-level facts that are almost always relevant.
+          // Like GPT's "saved memories" that are injected into every conversation,
+          // we prepend Core tier memories without retrieval scoring, then fill
+          // remaining slots with standard hybrid retrieval results.
+          const coreEntries = await runtimeContext.store.list(scopeFilter, category, 50);
+          const coreMemories: RetrievalResult[] = coreEntries
+            .filter((entry) => {
+              const meta = parseSmartMetadata(entry.metadata, entry);
+              return meta.tier === "core";
+            })
+            .slice(0, Math.min(5, safeLimit))
+            .map((entry) => ({
+              entry,
+              score: 1.0, // Core memories always rank highest
+              sources: { core: { autoInjected: true } },
+            } as unknown as RetrievalResult));
+
+          const coreIds = new Set(coreMemories.map((r) => r.entry.id));
+          const remainingSlots = Math.max(1, safeLimit - coreMemories.length);
+
+          const retrievedResults = filterUserMdExclusiveRecallResults(await retrieveWithRetry(runtimeContext.retriever, {
             query,
-            limit: safeLimit,
+            limit: remainingSlots,
             scopeFilter,
             category,
             source: "manual",
           }), runtimeContext.workspaceBoundary);
+
+          // Merge: core first (deduplicated), then retrieval results
+          const results = [
+            ...coreMemories,
+            ...retrievedResults.filter((r) => !coreIds.has(r.entry.id)),
+          ].slice(0, safeLimit);
 
           if (results.length === 0) {
             return {
@@ -610,7 +640,8 @@ export function registerMemoryRecallTool(
               const rendered = includeFullText
                 ? inline
                 : truncateText(inline, safeCharsPerItem);
-              return `${i + 1}. [${r.entry.id}] [${categoryTag}] ${rendered}`;
+              const coreTag = coreIds.has(r.entry.id) ? " [core]" : "";
+              return `${i + 1}. [${r.entry.id}] [${categoryTag}]${coreTag} ${rendered}`;
             })
             .join("\n");
 
@@ -1901,6 +1932,79 @@ export function registerMemoryExplainRankTool(
 }
 
 // ============================================================================
+// Session Summary Tool (GPT-inspired)
+// ============================================================================
+
+export function registerSessionSummaryTool(
+  api: OpenClawPluginApi,
+  context: ToolContext,
+) {
+  api.registerTool(
+    (toolCtx) => {
+      const runtimeContext = resolveToolContext(context, toolCtx);
+      return {
+        name: "memory_session_summary",
+        label: "Session Summary",
+        description:
+          "Generate and store a summary of the current session. Call this at the end of a conversation or during checkpointing to preserve session-level context for future recall.",
+        parameters: Type.Object({
+          conversationText: Type.String({
+            description: "The conversation text to summarize (last ~4000 chars are used)",
+          }),
+          sessionKey: Type.Optional(
+            Type.String({ description: "Session identifier (auto-generated if omitted)" }),
+          ),
+          scope: Type.Optional(
+            Type.String({ description: "Memory scope to store summary in" }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const { conversationText, sessionKey, scope } = params as {
+            conversationText: string;
+            sessionKey?: string;
+            scope?: string;
+          };
+
+          if (!runtimeContext.extractor) {
+            return {
+              content: [{ type: "text", text: "Session summary not available: SmartExtractor not configured." }],
+              details: { error: "extractor_not_configured" },
+            };
+          }
+
+          try {
+            const effectiveSessionKey = sessionKey || `session-${Date.now()}`;
+            const result = await runtimeContext.extractor.summarizeSession(
+              conversationText,
+              effectiveSessionKey,
+              { scope },
+            );
+
+            if (!result) {
+              return {
+                content: [{ type: "text", text: "Failed to generate session summary." }],
+                details: { error: "summary_generation_failed" },
+              };
+            }
+
+            return {
+              content: [{ type: "text", text: `Session summary stored [${result.id}]: ${result.summary}` }],
+              details: { action: "session_summary_stored", id: result.id, summary: result.summary },
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Session summary failed: ${error instanceof Error ? error.message : String(error)}` }],
+              details: { error: "session_summary_failed", message: String(error) },
+            };
+          }
+        },
+      };
+    },
+    { name: "memory_session_summary" },
+  );
+}
+
+// ============================================================================
 // Tool Registration Helper
 // ============================================================================
 
@@ -1917,6 +2021,11 @@ export function registerAllMemoryTools(
   registerMemoryStoreTool(api, context);
   registerMemoryForgetTool(api, context);
   registerMemoryUpdateTool(api, context);
+
+  // Session summary tool (enabled when extractor is available)
+  if (context.extractor) {
+    registerSessionSummaryTool(api, context);
+  }
 
   // Management tools (optional)
   if (options.enableManagementTools) {

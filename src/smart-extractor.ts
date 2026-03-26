@@ -1289,4 +1289,87 @@ export class SmartExtractor {
       );
     }
   }
+
+  // ==========================================================================
+  // Session Summary (GPT-inspired)
+  // ==========================================================================
+
+  /**
+   * Generate and persist a session-level summary as a single memory entry.
+   *
+   * GPT stores lightweight digests of recent conversations (timestamp + topic +
+   * key user messages) so the model can answer "what did we discuss last time?"
+   * without full conversation retrieval. This method provides the same capability
+   * for UltraMemory — call it at the end of a session or during checkpointing.
+   *
+   * The summary is stored with source="session-summary", tier="working", and
+   * a relatively low importance (0.4) so it naturally decays over time via Weibull.
+   */
+  async summarizeSession(
+    conversationText: string,
+    sessionKey: string,
+    options: ExtractPersistOptions = {},
+  ): Promise<{ id: string; summary: string } | null> {
+    const targetScope = options.scope ?? this.config.defaultScope ?? "global";
+
+    const prompt = `Summarize this conversation session in 2-3 sentences.
+Focus on: main topics discussed, key decisions made, and any action items.
+Do NOT include system metadata, timestamps, or message IDs.
+
+Session: ${sessionKey}
+
+Conversation:
+${conversationText.slice(-4000)}
+
+Respond in JSON:
+{
+  "summary": "2-3 sentence summary of the session",
+  "topics": ["topic1", "topic2"]
+}`;
+
+    const result = await this.llm.completeJson<{
+      summary: string;
+      topics?: string[];
+    }>(prompt, "session-summary");
+
+    if (!result?.summary) {
+      this.log("memory-pro: smart-extractor: session summary extraction failed");
+      return null;
+    }
+
+    const summaryText = result.summary;
+    const topicsTag = result.topics?.length
+      ? ` [topics: ${result.topics.join(", ")}]`
+      : "";
+
+    const vector = await this.embedder.embedQuery(summaryText);
+    const metadata = buildSmartMetadata(
+      { text: summaryText, category: "other", importance: 0.4 },
+      {
+        l0_abstract: `Session summary: ${summaryText.slice(0, 100)}`,
+        l1_overview: `## Session: ${sessionKey}\n${summaryText}${topicsTag}`,
+        l2_content: summaryText,
+        memory_category: "events",
+        source: "session-summary",
+        tier: "working",
+        confidence: 0.6,
+        source_session: sessionKey,
+      },
+    );
+
+    const entry = await this.store.store({
+      text: summaryText,
+      vector,
+      category: "other",
+      scope: targetScope,
+      importance: 0.4,
+      metadata: stringifySmartMetadata(metadata),
+    });
+
+    this.log(
+      `memory-pro: smart-extractor: session summary stored [${entry.id}] ${summaryText.slice(0, 80)}`,
+    );
+
+    return { id: entry.id, summary: summaryText };
+  }
 }

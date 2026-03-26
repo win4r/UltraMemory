@@ -1981,6 +1981,7 @@ const memoryLanceDBProPlugin = {
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
         workspaceBoundary: config.workspaceBoundary,
+        extractor: smartExtractor ?? undefined,
       },
       {
         enableManagementTools: config.enableManagementTools,
