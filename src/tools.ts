@@ -31,6 +31,68 @@ import {
 } from "./workspace-boundary.js";
 
 // ============================================================================
+// Ephemeral Mode (pause/resume auto-capture)
+// ============================================================================
+
+let _ephemeralPaused = false;
+
+/** Returns true when auto-capture is paused (ephemeral mode active). */
+export function isEphemeral(): boolean {
+  return _ephemeralPaused;
+}
+
+export function registerEphemeralTools(api: OpenClawPluginApi) {
+  api.registerTool(
+    () => ({
+      name: "memory_pause",
+      label: "Pause Auto-Capture",
+      description:
+        "Pause automatic memory capture for the remainder of this session. " +
+        "Manual memory_store calls are unaffected. Use memory_resume to re-enable.",
+      parameters: Type.Object({}),
+      async execute() {
+        if (_ephemeralPaused) {
+          return {
+            content: [{ type: "text" as const, text: "Auto-capture is already paused." }],
+            details: { action: "memory_pause", alreadyPaused: true },
+          };
+        }
+        _ephemeralPaused = true;
+        return {
+          content: [{ type: "text" as const, text: "Auto-capture paused. Memories will not be captured automatically until you call memory_resume." }],
+          details: { action: "memory_pause", paused: true },
+        };
+      },
+    }),
+    { name: "memory_pause" },
+  );
+
+  api.registerTool(
+    () => ({
+      name: "memory_resume",
+      label: "Resume Auto-Capture",
+      description:
+        "Resume automatic memory capture after a previous memory_pause.",
+      parameters: Type.Object({}),
+      async execute() {
+        if (!_ephemeralPaused) {
+          return {
+            content: [{ type: "text" as const, text: "Auto-capture is not paused." }],
+            details: { action: "memory_resume", alreadyActive: true },
+          };
+        }
+        _ephemeralPaused = false;
+        return {
+          content: [{ type: "text" as const, text: "Auto-capture resumed. Memories will be captured automatically again." }],
+          details: { action: "memory_resume", paused: false },
+        };
+      },
+    }),
+    { name: "memory_resume" },
+  );
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -182,6 +244,29 @@ async function retrieveWithRetry(
     results = await retriever.retrieve(params);
   }
   return results;
+}
+
+/**
+ * Shadow recall after deletion: verify the deleted memory no longer appears
+ * in search results. Best-effort — failure returns null, not false.
+ */
+async function shadowRecallVerify(
+  retriever: MemoryRetriever,
+  deletedId: string,
+  queryText: string,
+  scopeFilter?: string[],
+): Promise<boolean | null> {
+  try {
+    const results = await retriever.retrieve({
+      query: queryText,
+      limit: 3,
+      scopeFilter,
+    });
+    const stillPresent = results.some((r) => r.entry.id === deletedId);
+    return !stillPresent;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveMemoryId(
@@ -689,7 +774,14 @@ export function registerMemoryStoreTool(
       name: "memory_store",
       label: "Memory Store",
       description:
-        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
+        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.\n" +
+        "\n" +
+        "PROACTIVE STORE GUIDANCE — call this tool during the conversation, not just at the end:\n" +
+        "• Reusable pattern discovered: when you find a solution, workaround, or design pattern that would help in future tasks, store it immediately (category: 'decision' or 'fact', importance: 0.8+).\n" +
+        "• Non-obvious preference confirmed: when the user explicitly confirms a preference that is not common sense (e.g., formatting style, naming convention, communication tone), store it right away (category: 'preference', importance: 0.8).\n" +
+        "• Corrected misconception: when you or the user correct a previous wrong assumption, store the correction so it is never repeated (category: 'reflection', importance: 0.85).\n" +
+        "• Complex problem solved: after resolving a multi-step debugging session or tricky integration, store the root cause and fix as a case (category: 'fact' or 'decision', importance: 0.8).\n" +
+        "Do NOT store: greetings, small talk, transient task status, or information that is already in memory (the tool deduplicates automatically).",
       parameters: Type.Object({
         text: Type.String({ description: "Information to remember" }),
         importance: Type.Optional(
@@ -945,11 +1037,20 @@ export function registerMemoryForgetTool(
           if (memoryId) {
             const deleted = await context.store.delete(memoryId, scopeFilter);
             if (deleted) {
+              const verified = await shadowRecallVerify(
+                context.retriever,
+                memoryId,
+                query ?? memoryId,
+                scopeFilter,
+              );
               return {
                 content: [
-                  { type: "text", text: `Memory ${memoryId} forgotten.` },
+                  {
+                    type: "text",
+                    text: `Memory ${memoryId} forgotten.${verified === true ? " Verified: no longer retrievable." : verified === null ? "" : " Warning: may still appear in search results."}`,
+                  },
                 ],
-                details: { action: "deleted", id: memoryId },
+                details: { action: "deleted", id: memoryId, deleted: true, verified },
               };
             } else {
               return {
@@ -981,19 +1082,27 @@ export function registerMemoryForgetTool(
             }
 
             if (results.length === 1 && results[0].score > 0.9) {
+              const deletedId = results[0].entry.id;
+              const deletedText = results[0].entry.text;
               const deleted = await context.store.delete(
-                results[0].entry.id,
+                deletedId,
                 scopeFilter,
               );
               if (deleted) {
+                const verified = await shadowRecallVerify(
+                  context.retriever,
+                  deletedId,
+                  deletedText,
+                  scopeFilter,
+                );
                 return {
                   content: [
                     {
                       type: "text",
-                      text: `Forgotten: "${results[0].entry.text}"`,
+                      text: `Forgotten: "${deletedText}"${verified === true ? " Verified: no longer retrievable." : verified === null ? "" : " Warning: may still appear in search results."}`,
                     },
                   ],
-                  details: { action: "deleted", id: results[0].entry.id },
+                  details: { action: "deleted", id: deletedId, deleted: true, verified },
                 };
               }
             }

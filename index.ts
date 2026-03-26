@@ -19,7 +19,7 @@ import { createEmbedder, getVectorDimensions } from "./src/embedder.js";
 import { createRetriever, DEFAULT_RETRIEVAL_CONFIG } from "./src/retriever.js";
 import { createScopeManager, resolveScopeFilter, isSystemBypassId, parseAgentIdFromSessionKey } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
-import { registerAllMemoryTools } from "./src/tools.js";
+import { registerAllMemoryTools, registerEphemeralTools, isEphemeral } from "./src/tools.js";
 import { appendSelfImprovementEntry, ensureSelfImprovementLearningFiles } from "./src/self-improvement-files.js";
 import type { MdMirrorWriter } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
@@ -1989,6 +1989,9 @@ const memoryLanceDBProPlugin = {
       }
     );
 
+    // Ephemeral mode tools (memory_pause / memory_resume)
+    registerEphemeralTools(api);
+
     // ========================================================================
     // Register CLI Commands
     // ========================================================================
@@ -2323,6 +2326,12 @@ const memoryLanceDBProPlugin = {
       };
 
       const agentEndAutoCaptureHook: AgentEndAutoCaptureHook = (event, ctx) => {
+        // Ephemeral mode: skip auto-capture when paused via memory_pause tool
+        if (isEphemeral()) {
+          api.logger.debug("memory-lancedb-pro: auto-capture skipped (ephemeral mode active)");
+          return;
+        }
+
         if (!event.success || !event.messages || event.messages.length === 0) {
           return;
         }

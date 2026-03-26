@@ -8,7 +8,14 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
   return [
     {
       name: "memory_store",
-      description: "Store a new memory",
+      description:
+        "Store a new memory. " +
+        "PROACTIVE STORE GUIDANCE — call this tool during the conversation, not just at the end: " +
+        "(1) Reusable pattern discovered — store solutions, workarounds, or design patterns immediately (importance: 0.8+). " +
+        "(2) Non-obvious preference confirmed — store when the user explicitly confirms an uncommon preference (importance: 0.8). " +
+        "(3) Corrected misconception — store corrections to previous wrong assumptions so they are never repeated (importance: 0.85). " +
+        "(4) Complex problem solved — store root cause and fix after multi-step debugging or tricky integration (importance: 0.8). " +
+        "Do NOT store greetings, small talk, transient task status, or duplicates (auto-deduplicated).",
       inputSchema: {
         type: "object",
         properties: {
