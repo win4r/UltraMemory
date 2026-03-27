@@ -31,7 +31,9 @@ import {
   stringifySmartMetadata,
   toLifecycleMemory,
   isNoise,
+  getDecayableFromEntry,
 } from "@ultramemory/core";
+import { FeedbackLearner } from "../../core/src/feedback-learner.ts";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -147,6 +149,7 @@ export class MemoryService {
   private scopeManager!: MemoryScopeManager;
   private decayEngine!: DecayEngine;
   private tierManager!: TierManager;
+  private feedbackLearner?: FeedbackLearner;
   private initialized = false;
 
   constructor(config: Partial<UltraMemoryConfig> & { embedding: UltraMemoryConfig["embedding"] }) {
@@ -196,6 +199,8 @@ export class MemoryService {
       ...(this.config.tier || {}),
     });
 
+    this.feedbackLearner = new FeedbackLearner(this._store, this.config.decay?.feedbackAlpha ?? 0.15);
+
     this.retriever = createRetriever(
       this._store,
       this.embedder,
@@ -226,6 +231,7 @@ export class MemoryService {
     this.scopeManager = null!;
     this.decayEngine = null!;
     this.tierManager = null!;
+    this.feedbackLearner = undefined;
     this.initialized = false;
 
     process.stderr.write("[MemoryService] shutdown complete\n");
@@ -332,6 +338,25 @@ export class MemoryService {
       }
     }
 
+    // Lifecycle evaluation (all sources, not just auto)
+    if (this.decayEngine && this.tierManager) {
+      for (const r of results) {
+        const decayable = getDecayableFromEntry(r.entry);
+        const decayScore = this.decayEngine.score(decayable.memory);
+        const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+        if (transition) {
+          this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
+        }
+      }
+    }
+
+    // Positive feedback for manual recalls
+    if (params.source !== "auto" && this.feedbackLearner) {
+      for (const r of results) {
+        this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
+      }
+    }
+
     const depth = params.depth || "full";
 
     return results.map((r) => {
@@ -433,6 +458,19 @@ export class MemoryService {
 
   async forget(params: ForgetParams): Promise<ForgetResult> {
     this.ensureInitialized();
+
+    // Negative feedback propagation to related memories
+    if (this.feedbackLearner) {
+      const entry = await this._store.getById(params.id);
+      if (entry) {
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        for (const rel of meta.relations ?? []) {
+          this.feedbackLearner.recordNegative(rel.targetId).catch(() => {});
+        }
+        this.feedbackLearner.setDirect(params.id, 0.1).catch(() => {});
+      }
+    }
+
     const ok = await this._store.delete(params.id);
     return { ok };
   }
