@@ -68,7 +68,7 @@ program
 
     if (opts.mcp) {
       console.error("UltraMemory MCP server starting on stdio...");
-      await startMcpServer(service);
+      await startMcpServer(service, config);
     }
   });
 

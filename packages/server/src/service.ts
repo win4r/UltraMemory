@@ -522,6 +522,15 @@ export class MemoryService {
     return this._store.stats(scopeFilter);
   }
 
+  async feedback(params: { id: string; helpful: boolean }): Promise<{ ok: boolean; id: string }> {
+    this.ensureInitialized();
+    if (!this.feedbackLearner) {
+      return { ok: false, id: params.id };
+    }
+    await this.feedbackLearner.recordExplicit(params.id, params.helpful);
+    return { ok: true, id: params.id };
+  }
+
   // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------

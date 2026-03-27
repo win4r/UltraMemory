@@ -88,6 +88,7 @@ export interface UltraMemoryConfig {
   scopes?: ScopeConfig;
   smartExtraction?: boolean;
   entityAliases?: Record<string, string>;
+  enableFeedbackTool?: boolean;  // default false
 }
 
 const DEFAULT_DB_PATH = join(homedir(), ".ultramemory", "db");
@@ -114,6 +115,7 @@ export function resolveConfig(
     tier: partial.tier,
     scopes: partial.scopes,
     smartExtraction: partial.smartExtraction ?? true,
+    enableFeedbackTool: partial.enableFeedbackTool ?? false,
   };
 }
 
