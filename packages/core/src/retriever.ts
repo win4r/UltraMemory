@@ -174,6 +174,57 @@ export function applyCategoryThreshold(
 }
 
 // ============================================================================
+// Relation-Aware Reranking
+// ============================================================================
+
+export const RELATION_BOOST_PER_HIT = 0.03;
+export const RELATION_BOOST_CAP = 0.09;
+
+/**
+ * Boost scores of candidates that are connected to other candidates via
+ * relations stored in their metadata. Both forward (this → other) and reverse
+ * (other → this) relation hits are counted. Total boost is capped at
+ * RELATION_BOOST_CAP to avoid overwhelming relevance signals.
+ */
+export function applyRelationBoost(
+  candidates: Array<{ entry: { id: string; metadata?: string }; score: number }>,
+): typeof candidates {
+  const poolIds = new Set(candidates.map((c) => c.entry.id));
+
+  // Build reverse index: targetId → Set<sourceId>
+  const reverseIndex = new Map<string, Set<string>>();
+  const forwardMap = new Map<string, string[]>();
+
+  for (const c of candidates) {
+    let relations: Array<{ targetId: string }> = [];
+    try {
+      const meta = typeof c.entry.metadata === "string" ? JSON.parse(c.entry.metadata) : {};
+      relations = Array.isArray(meta.relations) ? meta.relations : [];
+    } catch { /* ignore parse errors */ }
+
+    const forwardHits: string[] = [];
+    for (const rel of relations) {
+      if (poolIds.has(rel.targetId)) forwardHits.push(rel.targetId);
+      const set = reverseIndex.get(rel.targetId);
+      if (set) set.add(c.entry.id);
+      else reverseIndex.set(rel.targetId, new Set([c.entry.id]));
+    }
+    forwardMap.set(c.entry.id, forwardHits);
+  }
+
+  for (const c of candidates) {
+    const forwardHits = forwardMap.get(c.entry.id)?.length ?? 0;
+    const reverseHits = reverseIndex.get(c.entry.id)?.size ?? 0;
+    const totalHits = forwardHits + reverseHits;
+    if (totalHits > 0) {
+      const boost = Math.min(totalHits * RELATION_BOOST_PER_HIT, RELATION_BOOST_CAP);
+      c.score = Math.min(1, c.score + boost);
+    }
+  }
+  return candidates;
+}
+
+// ============================================================================
 // Query Understanding (lightweight heuristic — no LLM calls)
 // ============================================================================
 
@@ -576,8 +627,9 @@ export class MemoryRetriever {
 
     const weighted = this.decayEngine ? mapped : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
     const lengthNormalized = this.applyLengthNormalization(weighted);
+    const relationBoosted = applyRelationBoost(lengthNormalized);
     const hardFiltered = applyCategoryThreshold(
-      lengthNormalized,
+      relationBoosted,
       c.categoryScoreThresholds ?? {},
       c.hardMinScore,
     );
@@ -640,8 +692,9 @@ export class MemoryRetriever {
       : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
 
     const lengthNormalized = this.applyLengthNormalization(temporallyRanked);
+    const relationBoosted = applyRelationBoost(lengthNormalized);
     const hardFiltered = applyCategoryThreshold(
-      lengthNormalized,
+      relationBoosted,
       c.categoryScoreThresholds ?? {},
       c.hardMinScore,
     );
@@ -710,11 +763,14 @@ export class MemoryRetriever {
     // Apply length normalization (penalize long entries dominating via keyword density)
     const lengthNormalized = this.applyLengthNormalization(temporallyRanked);
 
+    // Boost candidates connected by relations within the result pool
+    const relationBoosted = applyRelationBoost(lengthNormalized);
+
     // Hard minimum score cutoff should be based on semantic / lexical relevance.
     // Lifecycle decay and time-decay are used for re-ranking, not for dropping
     // otherwise relevant fresh memories.
     const hardFiltered = applyCategoryThreshold(
-      lengthNormalized,
+      relationBoosted,
       c.categoryScoreThresholds ?? {},
       c.hardMinScore,
     );

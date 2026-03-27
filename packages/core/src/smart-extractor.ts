@@ -1067,7 +1067,7 @@ export class SmartExtractor {
       relations: [{ type: "contextualizes", targetId: matchId }],
     }, admissionAudit));
 
-    await this.store.store({
+    const newEntry = await this.store.store({
       text: candidate.abstract,
       vector,
       category: storeCategory,
@@ -1075,6 +1075,19 @@ export class SmartExtractor {
       importance: this.getDefaultImportance(candidate.category),
       metadata,
     });
+
+    // Bidirectional relation: patch the existing memory to point back to the new entry
+    try {
+      const existing = await this.store.getById(matchId, scopeFilter);
+      if (existing) {
+        const existingMeta = parseSmartMetadata(existing.metadata, existing);
+        await this.store.patchMetadata(matchId, {
+          relations: appendRelation(existingMeta.relations ?? [], { type: "related_to", targetId: newEntry.id }),
+        }, scopeFilter);
+      }
+    } catch {
+      // Non-critical: new entry was stored successfully; reverse relation is best-effort
+    }
 
     this.log(
       `memory-pro: smart-extractor: contextualize [${contextLabel || "general"}] new entry linked to ${matchId.slice(0, 8)}`,
