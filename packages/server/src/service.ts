@@ -531,6 +531,69 @@ export class MemoryService {
     return { ok: true, id: params.id };
   }
 
+  /**
+   * Backfill multi-vector columns (vector_l0/l1/l2) for all memories that
+   * still have zero vectors in those columns. Reads L0/L1/L2 texts from
+   * smart metadata and embeds each layer, reusing the main vector when the
+   * layer text is identical to the stored text.
+   *
+   * @param log  Progress logger (defaults to console.error)
+   * @returns    Number of memories updated
+   */
+  async backfillVectors(
+    log: (msg: string) => void = console.error,
+  ): Promise<number> {
+    this.ensureInitialized();
+
+    // list() returns entries without vectors for performance; we use it only
+    // for IDs/text/metadata, then fetch the full entry (with vector) via getById.
+    const entries = await this._store.list(undefined, undefined, 10000, 0);
+    const total = entries.length;
+    log(`backfill-vectors: scanning ${total} memories...`);
+
+    let done = 0;
+    let errors = 0;
+
+    for (const entry of entries) {
+      try {
+        // Fetch the full entry including the stored main vector
+        const full = await this._store.getById(entry.id);
+        if (!full) continue;
+
+        // If the main vector is already populated, we can use the reuse
+        // optimisation in embedMultiLayer; otherwise embed the text fresh.
+        const mainVector = full.vector.length > 0
+          ? full.vector
+          : await this.embedder.embedPassage(full.text);
+
+        const meta = parseSmartMetadata(full.metadata, full);
+        const l0 = meta.l0_abstract || full.text.slice(0, 200);
+        const l1 = meta.l1_overview || `- ${full.text.slice(0, 1000)}`;
+        const l2 = meta.l2_content || full.text;
+
+        const [vector_l0, vector_l1, vector_l2] = await this.embedMultiLayer(
+          full.text,
+          mainVector,
+          l0,
+          l1,
+          l2,
+        );
+
+        await this._store.update(full.id, { vector_l0, vector_l1, vector_l2 });
+        done++;
+        if (done % 50 === 0) {
+          log(`backfill-vectors: backfilled ${done}/${total} memories`);
+        }
+      } catch (err) {
+        errors++;
+        log(`backfill-vectors: ERROR on ${entry.id} — ${String(err)}`);
+      }
+    }
+
+    log(`backfill-vectors: complete — ${done} updated, ${errors} errors`);
+    return done;
+  }
+
   // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------
