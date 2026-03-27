@@ -100,6 +100,12 @@ export interface RetrievalConfig {
    * back to hardMinScore.
    */
   categoryScoreThresholds?: Record<string, number>;
+  /** L0 (concept-level) vector channel weight (default: 0.15). */
+  l0Weight?: number;
+  /** L1 (structure-level) vector channel weight (default: 0.10). */
+  l1Weight?: number;
+  /** L2 (detail-level) vector channel weight (default: 0.10). */
+  l2Weight?: number;
 }
 
 export interface RetrievalContext {
@@ -134,8 +140,11 @@ export interface RetrievalResult extends MemorySearchResult {
 
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   mode: "hybrid",
-  vectorWeight: 0.7,
-  bm25Weight: 0.3,
+  vectorWeight: 0.35,
+  bm25Weight: 0.30,
+  l0Weight: 0.15,
+  l1Weight: 0.10,
+  l2Weight: 0.10,
   minScore: 0.3,
   rerank: "cross-encoder",
   candidatePoolSize: 20,
@@ -534,6 +543,73 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // ============================================================================
+// 5-Channel RRF Fusion
+// ============================================================================
+
+interface ChannelInput {
+  results: MemorySearchResult[];
+  weight: number;
+  channelName: string;  // "vector", "l0", "l1", "l2", "bm25"
+}
+
+function setChannelTrace(trace: ScoringTrace, channel: string, score: number, rank: number): void {
+  switch (channel) {
+    case "vector": trace.vectorScore = score; trace.vectorRank = rank; break;
+    case "l0": trace.l0Score = score; break;
+    case "l1": trace.l1Score = score; break;
+    case "l2": trace.l2Score = score; break;
+    case "bm25": trace.bm25Score = score; trace.bm25Rank = rank; break;
+  }
+}
+
+function fuseMultiChannelResults(
+  channels: ChannelInput[],
+  rrfK: number,
+  bm25Results: MemorySearchResult[],
+  debug?: boolean,
+): Map<string, RetrievalResult> {
+  const fusionMap = new Map<string, RetrievalResult>();
+
+  for (const ch of channels) {
+    for (let rank = 0; rank < ch.results.length; rank++) {
+      const r = ch.results[rank];
+      const rrfScore = ch.weight / (rrfK + rank + 1);
+      const existing = fusionMap.get(r.entry.id);
+
+      if (existing) {
+        existing.score += rrfScore;
+        if (debug && existing.scoringTrace) {
+          setChannelTrace(existing.scoringTrace, ch.channelName, r.score, rank + 1);
+        }
+      } else {
+        const result: RetrievalResult = {
+          entry: r.entry,
+          score: rrfScore,
+          sources: {},
+        };
+        if (debug) {
+          result.scoringTrace = { finalScore: 0, searchPath: "hybrid" };
+          setChannelTrace(result.scoringTrace, ch.channelName, r.score, rank + 1);
+        }
+        fusionMap.set(r.entry.id, result);
+      }
+    }
+  }
+
+  // BM25 high-score floor: if bm25Score >= 0.75, ensure fused >= bm25Score * 0.92
+  for (const bm25r of bm25Results) {
+    if (bm25r.score >= 0.75) {
+      const existing = fusionMap.get(bm25r.entry.id);
+      if (existing && existing.score < bm25r.score * 0.92) {
+        existing.score = bm25r.score * 0.92;
+      }
+    }
+  }
+
+  return fusionMap;
+}
+
+// ============================================================================
 // Memory Retriever
 // ============================================================================
 
@@ -643,38 +719,43 @@ export class MemoryRetriever {
   ): Promise<RetrievalResult[]> {
     const c = cfg ?? this.config;
     const queryVector = await this.embedder.embedQuery(query);
-    const results = await this.store.vectorSearch(
-      queryVector,
-      limit,
-      c.minScore,
-      scopeFilter,
-      { excludeInactive: true },
+    const poolSize = Math.max(c.candidatePoolSize, limit * 2);
+
+    // Run 4 vector channels in parallel (no BM25)
+    const [vectorRes, l0Res, l1Res, l2Res] = await Promise.all([
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l0" }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l1" }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l2" }),
+    ]);
+
+    // Apply category filter
+    const filterCat = <T extends MemorySearchResult>(results: T[]): T[] =>
+      category ? results.filter((r) => r.entry.category === category) : results;
+
+    // Vector-only weight allocation: vector=0.50, l0=0.20, l1=0.15, l2=0.15
+    const fusionMap = fuseMultiChannelResults(
+      [
+        { results: filterCat(vectorRes), weight: 0.50, channelName: "vector" },
+        { results: filterCat(l0Res), weight: 0.20, channelName: "l0" },
+        { results: filterCat(l1Res), weight: 0.15, channelName: "l1" },
+        { results: filterCat(l2Res), weight: 0.15, channelName: "l2" },
+      ],
+      c.rrfK,
+      [], // no BM25 results
+      debug,
     );
 
-    // Filter by category if specified
-    const filtered = category
-      ? results.filter((r) => r.entry.category === category)
-      : results;
-
-    const mapped = filtered.map(
-      (result, index) => {
-        const r: RetrievalResult = {
-          ...result,
-          sources: {
-            vector: { score: result.score, rank: index + 1 },
-          },
-        };
-        if (debug) {
-          r.scoringTrace = {
-            finalScore: 0,
-            searchPath: "vector-only",
-            vectorScore: result.score,
-            vectorRank: index + 1,
-          };
+    // Override searchPath for vector-only mode
+    if (debug) {
+      for (const result of fusionMap.values()) {
+        if (result.scoringTrace) {
+          result.scoringTrace.searchPath = "vector-only";
         }
-        return r;
-      },
-    );
+      }
+    }
+
+    const mapped = Array.from(fusionMap.values()).sort((a, b) => b.score - a.score);
 
     const weighted = this.decayEngine ? mapped : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c, debug), debug);
     const lengthNormalized = this.applyLengthNormalization(weighted, debug);
@@ -789,20 +870,76 @@ export class MemoryRetriever {
 
     // Compute query embedding once, reuse for vector search + reranking
     const queryVector = await this.embedder.embedQuery(query);
+    const poolSize = candidatePoolSize;
 
-    // Run vector and BM25 searches in parallel
-    const [vectorResults, bm25Results] = await Promise.all([
-      this.runVectorSearch(
-        queryVector,
-        candidatePoolSize,
-        scopeFilter,
-        category,
-      ),
-      this.runBM25Search(query, candidatePoolSize, scopeFilter, category),
+    // Run 5 channels in parallel: vector + L0 + L1 + L2 + BM25
+    const [vectorRes, l0Res, l1Res, l2Res, bm25Res] = await Promise.all([
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l0" }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l1" }),
+      this.store.vectorSearch(queryVector, poolSize, c.minScore, scopeFilter, { excludeInactive: true, column: "vector_l2" }),
+      this.store.bm25Search(query, poolSize, scopeFilter, { excludeInactive: true }),
     ]);
 
-    // Fuse results using RRF (async: validates BM25-only entries exist in store)
-    const fusedResults = await this.fuseResults(vectorResults, bm25Results, c, debug);
+    // Apply category filter to all channels
+    const filterCat = <T extends MemorySearchResult>(results: T[]): T[] =>
+      category ? results.filter((r) => r.entry.category === category) : results;
+
+    const vectorFiltered = filterCat(vectorRes);
+    const l0Filtered = filterCat(l0Res);
+    const l1Filtered = filterCat(l1Res);
+    const l2Filtered = filterCat(l2Res);
+    const bm25Filtered = filterCat(bm25Res);
+
+    // Validate BM25-only entries (ghost entry check)
+    const vectorIds = new Set(vectorFiltered.map((r) => r.entry.id));
+    const validatedBm25: MemorySearchResult[] = [];
+    for (const r of bm25Filtered) {
+      if (vectorIds.has(r.entry.id)) {
+        validatedBm25.push(r);
+      } else {
+        try {
+          const exists = await this.store.hasId(r.entry.id);
+          if (exists) validatedBm25.push(r);
+        } catch {
+          validatedBm25.push(r); // fail-open
+        }
+      }
+    }
+
+    const fusionMap = fuseMultiChannelResults(
+      [
+        { results: vectorFiltered, weight: c.vectorWeight, channelName: "vector" },
+        { results: l0Filtered, weight: c.l0Weight ?? 0.15, channelName: "l0" },
+        { results: l1Filtered, weight: c.l1Weight ?? 0.10, channelName: "l1" },
+        { results: l2Filtered, weight: c.l2Weight ?? 0.10, channelName: "l2" },
+        { results: validatedBm25, weight: c.bm25Weight, channelName: "bm25" },
+      ],
+      c.rrfK,
+      validatedBm25,
+      debug,
+    );
+
+    // BM25-only results (no vector match) fall back to raw BM25 score
+    for (const bm25r of validatedBm25) {
+      if (!vectorIds.has(bm25r.entry.id)) {
+        const existing = fusionMap.get(bm25r.entry.id);
+        if (existing) {
+          existing.score = clamp01(bm25r.score, 0.1);
+        }
+      }
+    }
+
+    // Convert fusion map to sorted array
+    const fusedResults = Array.from(fusionMap.values()).sort((a, b) => b.score - a.score);
+
+    // Populate sources for backward compat
+    for (const result of fusedResults) {
+      result.sources.fused = { score: result.score };
+      if (debug && result.scoringTrace) {
+        result.scoringTrace.rrfFused = result.score;
+      }
+    }
 
     // Apply minimum score threshold
     const filtered = fusedResults.filter(

@@ -281,19 +281,27 @@ export class MemoryService {
     }
 
     // Build metadata
+    const meta = parseSmartMetadata("{}", { text, category, importance } as any);
+    const l0 = (meta as any).l0_abstract || text;
+    const l1 = (meta as any).l1_overview || `- ${text}`;
+    const l2 = (meta as any).l2_content || text;
+
     const metadata = stringifySmartMetadata(
       buildSmartMetadata(
         { text, category, importance },
         {
-          l0_abstract: text,
-          l1_overview: `- ${text}`,
-          l2_content: text,
+          l0_abstract: l0,
+          l1_overview: l1,
+          l2_content: l2,
           source: "manual",
           state: "confirmed",
           last_confirmed_use_at: Date.now(),
         },
       ),
     );
+
+    // Embed multi-layer vectors (reuses main vector when layer text === text)
+    const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(text, vector, l0, l1, l2);
 
     const entry = await this._store.store({
       text,
@@ -302,6 +310,9 @@ export class MemoryService {
       scope,
       importance,
       metadata,
+      vector_l0: vectorL0,
+      vector_l1: vectorL1,
+      vector_l2: vectorL2,
     });
 
     return {
@@ -514,6 +525,38 @@ export class MemoryService {
   // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------
+
+  /**
+   * Embed L0/L1/L2 layer texts, reusing the main text vector when a layer
+   * text is identical to the original text (avoids redundant API calls).
+   */
+  private async embedMultiLayer(
+    text: string,
+    textVector: number[],
+    l0: string,
+    l1: string,
+    l2: string,
+  ): Promise<[number[], number[], number[]]> {
+    const needsEmbed: string[] = [];
+    const mapping: Array<number | "reuse"> = [];
+
+    for (const layerText of [l0, l1, l2]) {
+      if (layerText === text) {
+        mapping.push("reuse");
+      } else {
+        mapping.push(needsEmbed.length);
+        needsEmbed.push(layerText);
+      }
+    }
+
+    const embedded = needsEmbed.length > 0
+      ? await this.embedder.embedBatchPassage(needsEmbed)
+      : [];
+
+    return mapping.map((m) =>
+      m === "reuse" ? textVector : embedded[m as number],
+    ) as [number[], number[], number[]];
+  }
 
   private ensureInitialized(): void {
     if (!this.initialized) {
