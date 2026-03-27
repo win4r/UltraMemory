@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildSmartMetadata, isMemoryActiveAt, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
+import { deterministicId } from "./utils/deterministic-id.js";
 
 // ============================================================================
 // Types
@@ -379,9 +380,16 @@ export class MemoryStore {
   ): Promise<MemoryEntry> {
     await this.ensureInitialized();
 
+    const id = deterministicId(entry.scope ?? "global", entry.text);
+    if (await this.hasId(id)) {
+      // Return existing entry as duplicate
+      const existing = await this.getById(id);
+      if (existing) return existing;
+    }
+
     const fullEntry: MemoryEntry = {
       ...entry,
-      id: randomUUID(),
+      id,
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
     };
