@@ -337,7 +337,7 @@ function registerHooks(
           if (prompt.length < minLength) return {};
 
           const query = prompt.slice(0, 1000);
-          const results = await service.recall({ query, limit: maxItems });
+          const results = await service.recall({ query, limit: maxItems, source: "auto" });
 
           if (results.length === 0) return {};
 

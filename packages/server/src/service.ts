@@ -33,7 +33,7 @@ import {
   isNoise,
   getDecayableFromEntry,
 } from "@ultramemory/core";
-import { FeedbackLearner } from "../../core/src/feedback-learner.ts";
+import { FeedbackLearner } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -429,7 +429,8 @@ export class MemoryService {
 
     if (params.text !== undefined) {
       updates.text = params.text;
-      updates.vector = await this.embedder.embedPassage(params.text);
+      const newVector = await this.embedder.embedPassage(params.text);
+      updates.vector = newVector;
 
       // Regenerate L0/L1/L2 metadata to match new text so recall with
       // depth=l0/l1/l2 returns up-to-date summaries.
@@ -442,11 +443,14 @@ export class MemoryService {
       } catch {
         // fail-open: rebuild metadata from scratch if lookup fails
       }
+      const l0 = params.text.slice(0, 200);
+      const l1 = `- ${params.text.slice(0, 1000)}`;
+      const l2 = params.text;
       const updatedMeta = {
         ...existingMeta,
-        l0_abstract: params.text.slice(0, 200),
-        l1_overview: `- ${params.text.slice(0, 1000)}`,
-        l2_content: params.text,
+        l0_abstract: l0,
+        l1_overview: l1,
+        l2_content: l2,
       };
       updates.metadata = stringifySmartMetadata(
         buildSmartMetadata(
@@ -454,6 +458,14 @@ export class MemoryService {
           updatedMeta as any,
         ),
       );
+
+      // Re-embed L0/L1/L2 vectors to keep multi-channel search in sync
+      const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(
+        params.text, newVector, l0, l1, l2,
+      );
+      updates.vector_l0 = vectorL0;
+      updates.vector_l1 = vectorL1;
+      updates.vector_l2 = vectorL2;
 
       fieldsUpdated.push("text");
     }
