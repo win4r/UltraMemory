@@ -49,6 +49,7 @@ import {
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
 import { inferAtomicBrandItemPreferenceSlot } from "./preference-slots.js";
+import { EntityResolver } from "./entity-resolver.js";
 
 // ============================================================================
 // Envelope Metadata Stripping
@@ -137,6 +138,8 @@ export interface SmartExtractorConfig {
   admissionControl?: AdmissionControlConfig;
   /** Optional sink for durable reject-audit logging. */
   onAdmissionRejected?: (entry: AdmissionRejectionAuditEntry) => Promise<void> | void;
+  /** Optional entity resolver for normalizing entity names in fact_key generation. */
+  entityResolver?: EntityResolver;
 }
 
 export interface ExtractPersistOptions {
@@ -929,8 +932,11 @@ export class SmartExtractor {
 
     const now = Date.now();
     const existingMeta = parseSmartMetadata(existing.metadata, existing);
+    const normalizedAbstract = this.config.entityResolver
+      ? this.config.entityResolver.resolve(candidate.abstract ?? "")
+      : (candidate.abstract ?? "");
     const factKey =
-      existingMeta.fact_key ?? deriveFactKey(candidate.category, candidate.abstract);
+      existingMeta.fact_key ?? deriveFactKey(candidate.category, normalizedAbstract);
     const storeCategory = this.mapToStoreCategory(candidate.category);
     const created = await this.store.store({
       text: candidate.abstract,

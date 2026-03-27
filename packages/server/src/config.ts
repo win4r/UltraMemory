@@ -87,6 +87,7 @@ export interface UltraMemoryConfig {
   tier?: TierConfig;
   scopes?: ScopeConfig;
   smartExtraction?: boolean;
+  entityAliases?: Record<string, string>;
 }
 
 const DEFAULT_DB_PATH = join(homedir(), ".ultramemory", "db");

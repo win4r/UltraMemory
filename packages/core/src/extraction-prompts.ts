@@ -76,6 +76,16 @@ Each memory contains three levels:
 
 **content (L2)**: Full narrative with background and details
 
+# Entity Naming Conventions
+
+When extracting entities, always use the most canonical full name:
+- "TS" or "ts" → "TypeScript"
+- "JS" → "JavaScript"
+- "React.js" or "ReactJS" → "React"
+- "k8s" → "Kubernetes"
+- "pg" or "postgres" → "PostgreSQL"
+Use the official capitalization. Avoid abbreviations in the abstract field.
+
 # Few-shot Examples
 
 ## profile
