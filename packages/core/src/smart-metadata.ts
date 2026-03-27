@@ -506,6 +506,34 @@ export function getDecayableFromEntry(
 }
 
 // ============================================================================
+// Scoring Trace — debug explainability for retrieval pipeline
+// ============================================================================
+
+export interface ScoringTrace {
+  vectorScore?: number;
+  vectorRank?: number;
+  bm25Score?: number;
+  bm25Rank?: number;
+  l0Score?: number;
+  l1Score?: number;
+  l2Score?: number;
+  rrfFused?: number;
+  rerankScore?: number;
+  rerankBlended?: number;
+  recencyBoost?: number;
+  importanceWeight?: number;
+  lengthNorm?: number;
+  timeDecay?: number;
+  lifecycleDecay?: number;
+  mmrPenalty?: number;
+  relationBoost?: number;
+  feedbackWeight?: number;
+  finalScore: number;
+  queryType?: string;
+  searchPath?: "hybrid" | "vector-only" | "bm25-only";
+}
+
+// ============================================================================
 // Contextual Support — optional extension to SmartMemoryMetadata
 // ============================================================================
 

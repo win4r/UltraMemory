@@ -65,6 +65,8 @@ export interface RecallParams {
   depth?: "l0" | "l1" | "l2" | "full";
   /** Recall source: "manual" (user-triggered) or "auto" (system auto-recall). Only manual recalls reinforce access count. Default: "manual" */
   source?: "manual" | "auto";
+  /** Enable debug scoring trace. When true, each result includes a full scoringTrace breakdown. Default: false. */
+  debug?: boolean;
 }
 
 export interface ScoringTrace {
@@ -323,6 +325,7 @@ export class MemoryService {
       limit,
       scopeFilter,
       category,
+      debug: params.debug,
     });
 
     // Update access metadata only for manual recalls (not auto-recall)
@@ -379,16 +382,20 @@ export class MemoryService {
 
       // Build scoring trace from retrieval result metadata (if available)
       const sources = (r as any).sources || {};
-      const scoringTrace: ScoringTrace = {
-        vectorRank: sources.vector?.rank,
-        vectorScore: sources.vector?.score,
-        bm25Rank: sources.bm25?.rank,
-        bm25Score: sources.bm25?.score,
-        rrfFused: sources.fused?.score,
-        rerankScore: sources.rerank?.score,
-        finalScore: r.score,
-        queryType: (r as any).queryType,
-      };
+      // Use the richer per-stage trace when debug=true, otherwise build a
+      // lightweight trace from the sources metadata (always available).
+      const scoringTrace: ScoringTrace = (params.debug && (r as any).scoringTrace)
+        ? (r as any).scoringTrace
+        : {
+            vectorRank: sources.vector?.rank,
+            vectorScore: sources.vector?.score,
+            bm25Rank: sources.bm25?.rank,
+            bm25Score: sources.bm25?.score,
+            rrfFused: sources.fused?.score,
+            rerankScore: sources.reranked?.score,
+            finalScore: r.score,
+            queryType: (r as any).queryType,
+          };
 
       return {
         id: r.entry.id,
