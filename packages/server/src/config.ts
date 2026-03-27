@@ -59,6 +59,7 @@ export interface DecayConfig {
   staleThreshold?: number;
   searchBoostMin?: number;
   importanceModulation?: number;
+  feedbackAlpha?: number;  // default 0.15
 }
 
 export interface TierConfig {

@@ -60,6 +60,7 @@ export interface SmartMemoryMetadata {
   bad_recall_count: number;
   suppressed_until_turn: number;
   canonical_id?: string;
+  feedback_weight: number;  // 0.0-1.0, default 0.5
   [key: string]: unknown;
 }
 
@@ -311,6 +312,9 @@ export function parseSmartMetadata(
     bad_recall_count: clampCount(parsed.bad_recall_count, 0),
     suppressed_until_turn: clampCount(parsed.suppressed_until_turn, 0),
     canonical_id: normalizeOptionalString(parsed.canonical_id),
+    feedback_weight: typeof parsed.feedback_weight === 'number'
+      ? Math.max(0, Math.min(1, parsed.feedback_weight))
+      : 0.5,
   };
 
   return normalized;
@@ -393,6 +397,9 @@ export function buildSmartMetadata(
       patch.canonical_id === undefined
         ? base.canonical_id
         : normalizeOptionalString(patch.canonical_id),
+    feedback_weight: typeof patch.feedback_weight === 'number'
+      ? Math.max(0, Math.min(1, patch.feedback_weight))
+      : base.feedback_weight,
   };
 }
 
@@ -492,6 +499,7 @@ export function getDecayableFromEntry(
     accessCount: meta.access_count,
     createdAt,
     lastAccessedAt: meta.last_accessed_at || createdAt,
+    feedbackWeight: meta.feedback_weight,
   };
 
   return { memory, meta };
