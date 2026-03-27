@@ -294,19 +294,34 @@ export class MemoryStore {
           console.warn("memory-lancedb-pro: could not check/migrate table schema:", err);
         }
       }
+
+      // Migrate: add multi-vector columns (vector_l0, vector_l1, vector_l2)
+      try {
+        const schema = await table.schema();
+        const columnNames = schema.fields.map((f: { name: string }) => f.name);
+        if (!columnNames.includes("vector_l0")) {
+          await this.migrateAddVectorColumns(table, db);
+          // Table reference may have been replaced during migration
+          table = this.table ?? table;
+        }
+      } catch (err) {
+        console.warn("memory-lancedb-pro: could not migrate vector columns:", err);
+      }
     } catch (_openErr) {
       // Table doesn't exist yet — create it
-      const schemaEntry: MemoryEntry = {
+      const zeroVec = Array.from({ length: this.config.vectorDim }).fill(0) as number[];
+      const schemaEntry: any = {
         id: "__schema__",
         text: "",
-        vector: Array.from({ length: this.config.vectorDim }).fill(
-          0,
-        ) as number[],
+        vector: zeroVec,
         category: "other",
         scope: "global",
         importance: 0,
         timestamp: 0,
         metadata: "{}",
+        vector_l0: zeroVec,
+        vector_l1: zeroVec,
+        vector_l2: zeroVec,
       };
 
       try {
@@ -353,6 +368,74 @@ export class MemoryStore {
     this.table = table;
   }
 
+  private async migrateAddVectorColumns(table: LanceDB.Table, db: LanceDB.Connection): Promise<void> {
+    const dim = this.config.vectorDim;
+    const zeroVec = new Array(dim).fill(0);
+
+    try {
+      // Try addColumns first (may work in newer LanceDB versions)
+      await table.addColumns([
+        { name: "vector_l0", valueSql: `array_fill(0.0, ${dim})` },
+        { name: "vector_l1", valueSql: `array_fill(0.0, ${dim})` },
+        { name: "vector_l2", valueSql: `array_fill(0.0, ${dim})` },
+      ]);
+      console.log("memory-lancedb-pro: added vector_l0/l1/l2 columns via addColumns");
+      return;
+    } catch (_e) {
+      // Fallback: table recreation
+      console.warn("memory-lancedb-pro: addColumns failed for vector columns, falling back to table recreation");
+    }
+
+    const allRows = await table.query().toArray();
+
+    if (allRows.length > 10000) {
+      console.warn(`[UltraMemory] Large table (${allRows.length} rows) — consider running 'upgrade --backfill-vectors' instead`);
+    }
+
+    // Add zero-filled vector columns to each row
+    const enrichedRows = allRows.map((row: any) => ({
+      ...row,
+      // Convert Arrow vector to plain JS array for LanceDB re-ingestion
+      vector: Array.from(row.vector as Iterable<number>),
+      vector_l0: row.vector_l0 ? Array.from(row.vector_l0 as Iterable<number>) : zeroVec,
+      vector_l1: row.vector_l1 ? Array.from(row.vector_l1 as Iterable<number>) : zeroVec,
+      vector_l2: row.vector_l2 ? Array.from(row.vector_l2 as Iterable<number>) : zeroVec,
+    }));
+
+    // Recreate table with new schema
+    await db.dropTable(TABLE_NAME);
+
+    if (enrichedRows.length === 0) {
+      // No data — create with schema entry that includes vector columns
+      const schemaEntry: any = {
+        id: "__schema__",
+        text: "",
+        vector: zeroVec,
+        category: "other",
+        scope: "global",
+        importance: 0,
+        timestamp: 0,
+        metadata: "{}",
+        vector_l0: zeroVec,
+        vector_l1: zeroVec,
+        vector_l2: zeroVec,
+      };
+      this.table = await db.createTable(TABLE_NAME, [schemaEntry]);
+      await this.table.delete('id = "__schema__"');
+    } else {
+      this.table = await db.createTable(TABLE_NAME, enrichedRows);
+    }
+
+    // Rebuild FTS index on the new table
+    try {
+      await this.rebuildFtsIndex();
+    } catch (_e) {
+      console.warn("memory-lancedb-pro: FTS index rebuild after vector migration failed (non-critical)");
+    }
+
+    console.log(`memory-lancedb-pro: vector column migration complete (${enrichedRows.length} rows)`);
+  }
+
   private async createFtsIndex(table: LanceDB.Table): Promise<void> {
     try {
       // Check if FTS index already exists
@@ -376,7 +459,11 @@ export class MemoryStore {
   }
 
   async store(
-    entry: Omit<MemoryEntry, "id" | "timestamp">,
+    entry: Omit<MemoryEntry, "id" | "timestamp"> & {
+      vector_l0?: number[];
+      vector_l1?: number[];
+      vector_l2?: number[];
+    },
   ): Promise<MemoryEntry> {
     await this.ensureInitialized();
 
@@ -387,11 +474,18 @@ export class MemoryStore {
       if (existing) return existing;
     }
 
-    const fullEntry: MemoryEntry = {
-      ...entry,
+    const fullEntry: any = {
       id,
+      text: entry.text,
+      vector: entry.vector,
+      category: entry.category,
+      scope: entry.scope,
+      importance: entry.importance,
       timestamp: Date.now(),
       metadata: entry.metadata || "{}",
+      ...(entry.vector_l0 ? { vector_l0: entry.vector_l0 } : {}),
+      ...(entry.vector_l1 ? { vector_l1: entry.vector_l1 } : {}),
+      ...(entry.vector_l2 ? { vector_l2: entry.vector_l2 } : {}),
     };
 
     return this.runWithFileLock(async () => {
@@ -407,7 +501,7 @@ export class MemoryStore {
           `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`,
         );
       }
-      return fullEntry;
+      return fullEntry as MemoryEntry;
     });
   }
 
@@ -416,7 +510,11 @@ export class MemoryStore {
    * Used for re-embedding / migration / A/B testing across embedding models.
    * Intentionally separate from `store()` to keep normal writes simple.
    */
-  async importEntry(entry: MemoryEntry): Promise<MemoryEntry> {
+  async importEntry(entry: MemoryEntry & {
+    vector_l0?: number[];
+    vector_l1?: number[];
+    vector_l2?: number[];
+  }): Promise<MemoryEntry> {
     await this.ensureInitialized();
 
     if (!entry.id || typeof entry.id !== "string") {
@@ -430,19 +528,25 @@ export class MemoryStore {
       );
     }
 
-    const full: MemoryEntry = {
-      ...entry,
+    const full: any = {
+      id: entry.id,
+      text: entry.text,
+      vector: entry.vector,
+      category: entry.category,
       scope: entry.scope || "global",
       importance: Number.isFinite(entry.importance) ? entry.importance : 0.7,
       timestamp: Number.isFinite(entry.timestamp)
         ? entry.timestamp
         : Date.now(),
       metadata: entry.metadata || "{}",
+      ...(entry.vector_l0 ? { vector_l0: entry.vector_l0 } : {}),
+      ...(entry.vector_l1 ? { vector_l1: entry.vector_l1 } : {}),
+      ...(entry.vector_l2 ? { vector_l2: entry.vector_l2 } : {}),
     };
 
     return this.runWithFileLock(async () => {
       await this.table!.add([full]);
-      return full;
+      return full as MemoryEntry;
     });
   }
 
@@ -489,7 +593,7 @@ export class MemoryStore {
     };
   }
 
-  async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[], options?: { excludeInactive?: boolean }): Promise<MemorySearchResult[]> {
+  async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[], options?: { excludeInactive?: boolean; column?: string }): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
     if (isExplicitDenyAllScopeFilter(scopeFilter)) return [];
@@ -502,6 +606,9 @@ export class MemoryStore {
     const fetchLimit = Math.min(safeLimit * overFetchMultiplier, 200);
 
     let query = this.table!.vectorSearch(vector).distanceType('cosine').limit(fetchLimit);
+    // When multiple vector columns exist, LanceDB requires explicit column selection.
+    // Default to "vector" (the primary column) when no column is specified.
+    query = query.column(options?.column ?? "vector");
 
     // Apply scope filter if provided
     if (scopeFilter && scopeFilter.length > 0) {
@@ -900,6 +1007,9 @@ export class MemoryStore {
       importance?: number;
       category?: MemoryEntry["category"];
       metadata?: string;
+      vector_l0?: number[];
+      vector_l1?: number[];
+      vector_l2?: number[];
     },
     scopeFilter?: string[],
   ): Promise<MemoryEntry | null> {
@@ -977,7 +1087,7 @@ export class MemoryStore {
       };
 
       // Build updated entry, preserving original timestamp
-      const updated: MemoryEntry = {
+      const updated: any = {
         ...original,
         text: updates.text ?? original.text,
         vector: updates.vector ?? original.vector,
@@ -987,6 +1097,16 @@ export class MemoryStore {
         timestamp: original.timestamp, // preserve original
         metadata: updates.metadata ?? original.metadata,
       };
+
+      // Carry forward or update multi-vector columns
+      const vecFields = ["vector_l0", "vector_l1", "vector_l2"] as const;
+      for (const vf of vecFields) {
+        if ((updates as any)[vf]) {
+          updated[vf] = (updates as any)[vf];
+        } else if (row[vf]) {
+          updated[vf] = Array.from(row[vf] as Iterable<number>);
+        }
+      }
 
       // LanceDB doesn't support in-place update; we use add-then-delete
       // instead of delete-then-add because a duplicate is recoverable but
