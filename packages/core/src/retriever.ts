@@ -93,6 +93,12 @@ export interface RetrievalConfig {
   rrfK: number;
   /** MMR lambda (default: 0.7, range 0-1). Higher = more relevance, lower = more diversity. */
   mmrLambda?: number;
+  /**
+   * Per-category score thresholds. When a result's category matches a key,
+   * that threshold is used instead of hardMinScore. Unknown categories fall
+   * back to hardMinScore.
+   */
+  categoryScoreThresholds?: Record<string, number>;
 }
 
 export interface RetrievalContext {
@@ -141,7 +147,31 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   tagPrefixes: ["proj", "env", "team", "scope"],
   rrfK: 60,
   mmrLambda: 0.7,
+  categoryScoreThresholds: {
+    profile: 0.25, preferences: 0.25, entities: 0.30,
+    events: 0.35, cases: 0.45, patterns: 0.45,
+  },
 };
+
+// ============================================================================
+// Category Threshold Filtering
+// ============================================================================
+
+/**
+ * Filter retrieval results using per-category score thresholds.
+ * If a result's category has an entry in `thresholds`, that value is used;
+ * otherwise `hardMinScore` is the fallback.
+ */
+export function applyCategoryThreshold(
+  results: Array<{ entry: { category: string }; score: number }>,
+  thresholds: Record<string, number>,
+  hardMinScore: number,
+): Array<{ entry: { category: string }; score: number }> {
+  return results.filter((r) => {
+    const threshold = thresholds[r.entry.category] ?? hardMinScore;
+    return r.score >= threshold;
+  });
+}
 
 // ============================================================================
 // Query Understanding (lightweight heuristic — no LLM calls)
@@ -546,7 +576,11 @@ export class MemoryRetriever {
 
     const weighted = this.decayEngine ? mapped : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
     const lengthNormalized = this.applyLengthNormalization(weighted);
-    const hardFiltered = lengthNormalized.filter(r => r.score >= c.hardMinScore);
+    const hardFiltered = applyCategoryThreshold(
+      lengthNormalized,
+      c.categoryScoreThresholds ?? {},
+      c.hardMinScore,
+    );
     const lifecycleRanked = this.decayEngine
       ? this.applyDecayBoost(hardFiltered)
       : this.applyTimeDecay(hardFiltered);
@@ -606,7 +640,11 @@ export class MemoryRetriever {
       : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
 
     const lengthNormalized = this.applyLengthNormalization(temporallyRanked);
-    const hardFiltered = lengthNormalized.filter(r => r.score >= c.hardMinScore);
+    const hardFiltered = applyCategoryThreshold(
+      lengthNormalized,
+      c.categoryScoreThresholds ?? {},
+      c.hardMinScore,
+    );
 
     const lifecycleRanked = this.decayEngine
       ? this.applyDecayBoost(hardFiltered)
@@ -675,7 +713,11 @@ export class MemoryRetriever {
     // Hard minimum score cutoff should be based on semantic / lexical relevance.
     // Lifecycle decay and time-decay are used for re-ranking, not for dropping
     // otherwise relevant fresh memories.
-    const hardFiltered = lengthNormalized.filter(r => r.score >= c.hardMinScore);
+    const hardFiltered = applyCategoryThreshold(
+      lengthNormalized,
+      c.categoryScoreThresholds ?? {},
+      c.hardMinScore,
+    );
 
     // Apply lifecycle-aware decay or legacy time decay after thresholding
     const lifecycleRanked = this.decayEngine

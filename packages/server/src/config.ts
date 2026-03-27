@@ -47,6 +47,7 @@ export interface RetrievalConfig {
   timeDecayHalfLifeDays?: number;
   reinforcementFactor?: number;
   maxHalfLifeMultiplier?: number;
+  categoryScoreThresholds?: Record<string, number>;
 }
 
 export interface DecayConfig {
