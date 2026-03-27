@@ -3,7 +3,7 @@
  */
 
 import type * as LanceDB from "@lancedb/lancedb";
-import { randomUUID } from "node:crypto";
+
 import {
   existsSync,
   accessSync,
