@@ -105,6 +105,53 @@ export interface UpdateParams {
   category?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Session checkpoint types
+// ---------------------------------------------------------------------------
+
+export interface CheckpointParams {
+  /** Summary of the current session state */
+  summary: string;
+  /** Scope for the checkpoint (default: "global") */
+  scope?: string;
+  /** Session identifier for grouping checkpoints */
+  sessionId?: string;
+  /** Key decisions made in the session */
+  decisions?: string[];
+  /** Pending actions for the next session */
+  nextActions?: string[];
+  /** Unresolved items that need follow-up */
+  openLoops?: string[];
+  /** Relevant entities (people, projects, tools) */
+  entities?: string[];
+}
+
+export interface CheckpointResult {
+  id: string;
+  scope: string;
+  sessionId: string;
+  timestamp: number;
+}
+
+export interface ResumeParams {
+  /** Scope to search for the latest checkpoint */
+  scope?: string;
+  /** Optional session ID to resume a specific session */
+  sessionId?: string;
+}
+
+export interface ResumeResult {
+  id: string;
+  summary: string;
+  scope: string;
+  sessionId?: string;
+  decisions: string[];
+  nextActions: string[];
+  openLoops: string[];
+  entities: string[];
+  timestamp: number;
+}
+
 export interface UpdateResult {
   ok: boolean;
   id: string;
@@ -812,6 +859,106 @@ export class MemoryService {
   }
 
   // -----------------------------------------------------------------------
+  // Session checkpoint / resume
+  // -----------------------------------------------------------------------
+
+  async checkpoint(params: CheckpointParams): Promise<CheckpointResult> {
+    this.ensureInitialized();
+
+    const scope = params.scope || "global";
+    const sessionId = params.sessionId || `session-${Date.now()}`;
+
+    // Build structured text with recognizable prefix
+    const sections: string[] = [`[CHECKPOINT] ${params.summary}`];
+    if (params.decisions?.length)
+      sections.push(`Decisions: ${params.decisions.join("; ")}`);
+    if (params.nextActions?.length)
+      sections.push(`Next actions: ${params.nextActions.join("; ")}`);
+    if (params.openLoops?.length)
+      sections.push(`Open loops: ${params.openLoops.join("; ")}`);
+    if (params.entities?.length)
+      sections.push(`Entities: ${params.entities.join(", ")}`);
+    const text = sections.join("\n");
+
+    // Store with high importance so checkpoints decay slowly
+    const vector = await this.embedder.embedPassage(text);
+
+    const metadata = stringifySmartMetadata(
+      buildSmartMetadata(
+        { text, category: "decision", importance: 0.9 },
+        {
+          l0_abstract: `[CHECKPOINT] ${params.summary.slice(0, 180)}`,
+          l1_overview: sections.map((s) => `- ${s}`).join("\n"),
+          l2_content: text,
+          source: "session-summary",
+          state: "confirmed",
+          source_session: sessionId,
+          is_checkpoint: true,
+          checkpoint_decisions: params.decisions || [],
+          checkpoint_next_actions: params.nextActions || [],
+          checkpoint_open_loops: params.openLoops || [],
+          checkpoint_entities: params.entities || [],
+        },
+      ),
+    );
+
+    const entry = await this._store.store({
+      text,
+      vector,
+      category: "decision" as MemoryEntry["category"],
+      scope,
+      importance: 0.9,
+      metadata,
+    });
+
+    return { id: entry.id, scope, sessionId, timestamp: Date.now() };
+  }
+
+  async resume(params: ResumeParams = {}): Promise<ResumeResult | null> {
+    this.ensureInitialized();
+
+    const scopeFilter = params.scope ? [params.scope] : undefined;
+
+    // Fetch recent entries and filter for checkpoints in application layer.
+    // We fetch extra rows because not all entries are checkpoints.
+    const entries = await this._store.list(scopeFilter, undefined, 50, 0);
+
+    // Sort by timestamp descending (most recent first)
+    const sorted = entries.sort((a, b) => b.timestamp - a.timestamp);
+
+    for (const entry of sorted) {
+      const meta = parseSmartMetadata(entry.metadata, entry);
+
+      // Identify checkpoints by metadata flag or text prefix
+      const isCheckpoint =
+        (meta as Record<string, unknown>).is_checkpoint === true ||
+        entry.text.startsWith("[CHECKPOINT]");
+      if (!isCheckpoint) continue;
+
+      // If sessionId is specified, match it
+      if (params.sessionId && meta.source_session !== params.sessionId)
+        continue;
+
+      const raw = meta as Record<string, unknown>;
+      return {
+        id: entry.id,
+        summary: entry.text
+          .replace(/^\[CHECKPOINT\]\s*/, "")
+          .split("\n")[0],
+        scope: entry.scope,
+        sessionId: meta.source_session,
+        decisions: toStringArray(raw.checkpoint_decisions),
+        nextActions: toStringArray(raw.checkpoint_next_actions),
+        openLoops: toStringArray(raw.checkpoint_open_loops),
+        entities: toStringArray(raw.checkpoint_entities),
+        timestamp: entry.timestamp,
+      };
+    }
+
+    return null;
+  }
+
+  // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------
 
@@ -866,6 +1013,11 @@ function clamp01(value: number): number {
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

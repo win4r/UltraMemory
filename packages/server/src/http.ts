@@ -388,6 +388,67 @@ export function createHttpApp(service: MemoryService): Hono {
   });
 
   // -----------------------------------------------------------------------
+  // POST /api/v1/checkpoint — save session checkpoint
+  // -----------------------------------------------------------------------
+
+  app.post("/api/v1/checkpoint", async (c) => {
+    try {
+      const body = await c.req.json().catch(() => null);
+      if (!body || typeof body !== "object") {
+        return c.json(errorJson("VALIDATION_ERROR", "request body must be JSON"), 400);
+      }
+
+      if (typeof body.summary !== "string" || body.summary.trim() === "") {
+        return c.json(errorJson("VALIDATION_ERROR", "summary is required"), 400);
+      }
+      if (body.summary.length > MAX_TEXT_LENGTH) {
+        return c.json(
+          errorJson("VALIDATION_ERROR", `summary exceeds max length of ${MAX_TEXT_LENGTH} characters`),
+          400,
+        );
+      }
+
+      const result = await service.checkpoint({
+        summary: body.summary,
+        scope: body.scope,
+        sessionId: body.sessionId,
+        decisions: body.decisions,
+        nextActions: body.nextActions,
+        openLoops: body.openLoops,
+        entities: body.entities,
+      });
+
+      return c.json(result, 201);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/v1/checkpoint/latest — resume latest checkpoint
+  // -----------------------------------------------------------------------
+
+  app.get("/api/v1/checkpoint/latest", async (c) => {
+    try {
+      const scope = c.req.query("scope");
+      const sessionId = c.req.query("sessionId");
+
+      const result = await service.resume({
+        scope: scope || undefined,
+        sessionId: sessionId || undefined,
+      });
+
+      if (!result) {
+        return c.json(errorJson("NOT_FOUND", "no checkpoint found"), 404);
+      }
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
   // GET /api/v1/memory/:id/provenance — provenance query (Gemini-inspired)
   // -----------------------------------------------------------------------
 

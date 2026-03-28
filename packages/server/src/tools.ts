@@ -175,6 +175,53 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
       },
     },
     {
+      name: "memory_checkpoint",
+      description:
+        "Save a session checkpoint — captures current progress, decisions, and next actions so the session can be resumed later",
+      inputSchema: {
+        type: "object",
+        properties: {
+          summary: {
+            type: "string",
+            description:
+              "Summary of the current session state (what was done, where things stand)",
+          },
+          scope: {
+            type: "string",
+            description: "Scope for the checkpoint (default: global)",
+          },
+          sessionId: {
+            type: "string",
+            description:
+              "Session identifier for grouping checkpoints (auto-generated if omitted)",
+          },
+          decisions: {
+            type: "array",
+            items: { type: "string" },
+            description: "Key decisions made in the session",
+          },
+          nextActions: {
+            type: "array",
+            items: { type: "string" },
+            description: "Pending actions for the next session",
+          },
+          openLoops: {
+            type: "array",
+            items: { type: "string" },
+            description: "Unresolved items that need follow-up",
+          },
+          entities: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Relevant entities (people, projects, tools) for context",
+          },
+        },
+        required: ["summary"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: "memory_provenance",
       description:
         "Query the provenance (origin story) of a memory — shows where it came from, which session created it, and why",
@@ -187,6 +234,26 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
           },
         },
         required: ["id"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "memory_resume",
+      description:
+        "Resume a previous session — retrieves the latest checkpoint to restore context and continue where you left off",
+      inputSchema: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            description:
+              "Scope to search for the latest checkpoint (default: all scopes)",
+          },
+          sessionId: {
+            type: "string",
+            description: "Resume a specific session by its ID",
+          },
+        },
         additionalProperties: false,
       },
     },
