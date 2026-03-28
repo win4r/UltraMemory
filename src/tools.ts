@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
+import type { SmartExtractor } from "./smart-extractor.js";
 import { isNoise } from "./noise-filter.js";
 import { isSystemBypassId, resolveScopeFilter, parseAgentIdFromSessionKey, type MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
@@ -28,6 +29,68 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
+
+// ============================================================================
+// Ephemeral Mode (pause/resume auto-capture)
+// ============================================================================
+
+let _ephemeralPaused = false;
+
+/** Returns true when auto-capture is paused (ephemeral mode active). */
+export function isEphemeral(): boolean {
+  return _ephemeralPaused;
+}
+
+export function registerEphemeralTools(api: OpenClawPluginApi) {
+  api.registerTool(
+    () => ({
+      name: "memory_pause",
+      label: "Pause Auto-Capture",
+      description:
+        "Pause automatic memory capture for the remainder of this session. " +
+        "Manual memory_store calls are unaffected. Use memory_resume to re-enable.",
+      parameters: Type.Object({}),
+      async execute() {
+        if (_ephemeralPaused) {
+          return {
+            content: [{ type: "text" as const, text: "Auto-capture is already paused." }],
+            details: { action: "memory_pause", alreadyPaused: true },
+          };
+        }
+        _ephemeralPaused = true;
+        return {
+          content: [{ type: "text" as const, text: "Auto-capture paused. Memories will not be captured automatically until you call memory_resume." }],
+          details: { action: "memory_pause", paused: true },
+        };
+      },
+    }),
+    { name: "memory_pause" },
+  );
+
+  api.registerTool(
+    () => ({
+      name: "memory_resume",
+      label: "Resume Auto-Capture",
+      description:
+        "Resume automatic memory capture after a previous memory_pause.",
+      parameters: Type.Object({}),
+      async execute() {
+        if (!_ephemeralPaused) {
+          return {
+            content: [{ type: "text" as const, text: "Auto-capture is not paused." }],
+            details: { action: "memory_resume", alreadyActive: true },
+          };
+        }
+        _ephemeralPaused = false;
+        return {
+          content: [{ type: "text" as const, text: "Auto-capture resumed. Memories will be captured automatically again." }],
+          details: { action: "memory_resume", paused: false },
+        };
+      },
+    }),
+    { name: "memory_resume" },
+  );
+}
 
 // ============================================================================
 // Types
@@ -62,6 +125,8 @@ interface ToolContext {
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
+  /** Optional SmartExtractor for session summary generation */
+  extractor?: SmartExtractor;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -179,6 +244,29 @@ async function retrieveWithRetry(
     results = await retriever.retrieve(params);
   }
   return results;
+}
+
+/**
+ * Shadow recall after deletion: verify the deleted memory no longer appears
+ * in search results. Best-effort — failure returns null, not false.
+ */
+async function shadowRecallVerify(
+  retriever: MemoryRetriever,
+  deletedId: string,
+  queryText: string,
+  scopeFilter?: string[],
+): Promise<boolean | null> {
+  try {
+    const results = await retriever.retrieve({
+      query: queryText,
+      limit: 3,
+      scopeFilter,
+    });
+    const stillPresent = results.some((r) => r.entry.id === deletedId);
+    return !stillPresent;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveMemoryId(
@@ -566,13 +654,40 @@ export function registerMemoryRecallTool(
             }
           }
 
-          const results = filterUserMdExclusiveRecallResults(await retrieveWithRetry(runtimeContext.retriever, {
+          // ── Core tier auto-inject (GPT-inspired) ──
+          // Core memories are identity-level facts that are almost always relevant.
+          // Like GPT's "saved memories" that are injected into every conversation,
+          // we prepend Core tier memories without retrieval scoring, then fill
+          // remaining slots with standard hybrid retrieval results.
+          const coreEntries = await runtimeContext.store.list(scopeFilter, category, 50);
+          const coreMemories: RetrievalResult[] = coreEntries
+            .filter((entry) => {
+              const meta = parseSmartMetadata(entry.metadata, entry);
+              return meta.tier === "core";
+            })
+            .slice(0, Math.min(5, safeLimit))
+            .map((entry) => ({
+              entry,
+              score: 1.0, // Core memories always rank highest
+              sources: { core: { autoInjected: true } },
+            } as unknown as RetrievalResult));
+
+          const coreIds = new Set(coreMemories.map((r) => r.entry.id));
+          const remainingSlots = Math.max(1, safeLimit - coreMemories.length);
+
+          const retrievedResults = filterUserMdExclusiveRecallResults(await retrieveWithRetry(runtimeContext.retriever, {
             query,
-            limit: safeLimit,
+            limit: remainingSlots,
             scopeFilter,
             category,
             source: "manual",
           }), runtimeContext.workspaceBoundary);
+
+          // Merge: core first (deduplicated), then retrieval results
+          const results = [
+            ...coreMemories,
+            ...retrievedResults.filter((r) => !coreIds.has(r.entry.id)),
+          ].slice(0, safeLimit);
 
           if (results.length === 0) {
             return {
@@ -610,7 +725,8 @@ export function registerMemoryRecallTool(
               const rendered = includeFullText
                 ? inline
                 : truncateText(inline, safeCharsPerItem);
-              return `${i + 1}. [${r.entry.id}] [${categoryTag}] ${rendered}`;
+              const coreTag = coreIds.has(r.entry.id) ? " [core]" : "";
+              return `${i + 1}. [${r.entry.id}] [${categoryTag}]${coreTag} ${rendered}`;
             })
             .join("\n");
 
@@ -658,7 +774,14 @@ export function registerMemoryStoreTool(
       name: "memory_store",
       label: "Memory Store",
       description:
-        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
+        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.\n" +
+        "\n" +
+        "PROACTIVE STORE GUIDANCE — call this tool during the conversation, not just at the end:\n" +
+        "• Reusable pattern discovered: when you find a solution, workaround, or design pattern that would help in future tasks, store it immediately (category: 'decision' or 'fact', importance: 0.8+).\n" +
+        "• Non-obvious preference confirmed: when the user explicitly confirms a preference that is not common sense (e.g., formatting style, naming convention, communication tone), store it right away (category: 'preference', importance: 0.8).\n" +
+        "• Corrected misconception: when you or the user correct a previous wrong assumption, store the correction so it is never repeated (category: 'reflection', importance: 0.85).\n" +
+        "• Complex problem solved: after resolving a multi-step debugging session or tricky integration, store the root cause and fix as a case (category: 'fact' or 'decision', importance: 0.8).\n" +
+        "Do NOT store: greetings, small talk, transient task status, or information that is already in memory (the tool deduplicates automatically).",
       parameters: Type.Object({
         text: Type.String({ description: "Information to remember" }),
         importance: Type.Optional(
@@ -914,11 +1037,20 @@ export function registerMemoryForgetTool(
           if (memoryId) {
             const deleted = await context.store.delete(memoryId, scopeFilter);
             if (deleted) {
+              const verified = await shadowRecallVerify(
+                context.retriever,
+                memoryId,
+                query ?? memoryId,
+                scopeFilter,
+              );
               return {
                 content: [
-                  { type: "text", text: `Memory ${memoryId} forgotten.` },
+                  {
+                    type: "text",
+                    text: `Memory ${memoryId} forgotten.${verified === true ? " Verified: no longer retrievable." : verified === null ? "" : " Warning: may still appear in search results."}`,
+                  },
                 ],
-                details: { action: "deleted", id: memoryId },
+                details: { action: "deleted", id: memoryId, deleted: true, verified },
               };
             } else {
               return {
@@ -950,19 +1082,27 @@ export function registerMemoryForgetTool(
             }
 
             if (results.length === 1 && results[0].score > 0.9) {
+              const deletedId = results[0].entry.id;
+              const deletedText = results[0].entry.text;
               const deleted = await context.store.delete(
-                results[0].entry.id,
+                deletedId,
                 scopeFilter,
               );
               if (deleted) {
+                const verified = await shadowRecallVerify(
+                  context.retriever,
+                  deletedId,
+                  deletedText,
+                  scopeFilter,
+                );
                 return {
                   content: [
                     {
                       type: "text",
-                      text: `Forgotten: "${results[0].entry.text}"`,
+                      text: `Forgotten: "${deletedText}"${verified === true ? " Verified: no longer retrievable." : verified === null ? "" : " Warning: may still appear in search results."}`,
                     },
                   ],
-                  details: { action: "deleted", id: results[0].entry.id },
+                  details: { action: "deleted", id: deletedId, deleted: true, verified },
                 };
               }
             }
@@ -1901,6 +2041,79 @@ export function registerMemoryExplainRankTool(
 }
 
 // ============================================================================
+// Session Summary Tool (GPT-inspired)
+// ============================================================================
+
+export function registerSessionSummaryTool(
+  api: OpenClawPluginApi,
+  context: ToolContext,
+) {
+  api.registerTool(
+    (toolCtx) => {
+      const runtimeContext = resolveToolContext(context, toolCtx);
+      return {
+        name: "memory_session_summary",
+        label: "Session Summary",
+        description:
+          "Generate and store a summary of the current session. Call this at the end of a conversation or during checkpointing to preserve session-level context for future recall.",
+        parameters: Type.Object({
+          conversationText: Type.String({
+            description: "The conversation text to summarize (last ~4000 chars are used)",
+          }),
+          sessionKey: Type.Optional(
+            Type.String({ description: "Session identifier (auto-generated if omitted)" }),
+          ),
+          scope: Type.Optional(
+            Type.String({ description: "Memory scope to store summary in" }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const { conversationText, sessionKey, scope } = params as {
+            conversationText: string;
+            sessionKey?: string;
+            scope?: string;
+          };
+
+          if (!runtimeContext.extractor) {
+            return {
+              content: [{ type: "text", text: "Session summary not available: SmartExtractor not configured." }],
+              details: { error: "extractor_not_configured" },
+            };
+          }
+
+          try {
+            const effectiveSessionKey = sessionKey || `session-${Date.now()}`;
+            const result = await runtimeContext.extractor.summarizeSession(
+              conversationText,
+              effectiveSessionKey,
+              { scope },
+            );
+
+            if (!result) {
+              return {
+                content: [{ type: "text", text: "Failed to generate session summary." }],
+                details: { error: "summary_generation_failed" },
+              };
+            }
+
+            return {
+              content: [{ type: "text", text: `Session summary stored [${result.id}]: ${result.summary}` }],
+              details: { action: "session_summary_stored", id: result.id, summary: result.summary },
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `Session summary failed: ${error instanceof Error ? error.message : String(error)}` }],
+              details: { error: "session_summary_failed", message: String(error) },
+            };
+          }
+        },
+      };
+    },
+    { name: "memory_session_summary" },
+  );
+}
+
+// ============================================================================
 // Tool Registration Helper
 // ============================================================================
 
@@ -1917,6 +2130,11 @@ export function registerAllMemoryTools(
   registerMemoryStoreTool(api, context);
   registerMemoryForgetTool(api, context);
   registerMemoryUpdateTool(api, context);
+
+  // Session summary tool (enabled when extractor is available)
+  if (context.extractor) {
+    registerSessionSummaryTool(api, context);
+  }
 
   // Management tools (optional)
   if (options.enableManagementTools) {
