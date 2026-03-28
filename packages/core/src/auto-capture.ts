@@ -113,11 +113,26 @@ export function extractHeuristic(text: string): AutoCaptureItem[] {
     .map((s) => s.trim())
     .filter((s) => s.length > minSentenceLen);
 
-  for (const sentence of sentences) {
+  // NOTE (P2-3): Extraction is not speaker-scoped — the heuristic operates on
+  // raw conversationText without turn metadata. Speaker-scoping would require
+  // the caller to supply structured turn boundaries, which is outside the
+  // current `conversationText: string` parameter contract.
+
+  for (let i = 0; i < sentences.length; i++) {
+    const sentence = sentences[i];
+
     for (const pattern of SIGNAL_PATTERNS) {
       if (pattern.re.test(sentence)) {
+        // For correction signals, include the next sentence to capture the
+        // actual corrected fact (e.g. "Actually, that's wrong. The limit is 200.")
+        let capturedText = sentence;
+        if (pattern.sourceContext === "correction signal" && i + 1 < sentences.length) {
+          capturedText = `${sentence}. ${sentences[i + 1]}`;
+          i++; // skip next sentence since we consumed it
+        }
+
         items.push({
-          text: sentence,
+          text: capturedText,
           category: pattern.category,
           importance: pattern.importance,
           sourceContext: pattern.sourceContext,

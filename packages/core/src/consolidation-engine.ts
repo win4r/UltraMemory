@@ -18,6 +18,13 @@ import { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-
 // Config & result types
 // ---------------------------------------------------------------------------
 
+// NOTE (P2-4): Clustering is intentionally non-transitive and capped.
+// Transitive closure would be O(n^2) in the worst case and could cascade an
+// entire corpus into one mega-cluster. Instead, each seed expands to at most
+// `maxEntriesPerRun` entries via a single-hop vector search. Over multiple
+// consolidation runs the clusters converge as previously un-clustered entries
+// become seeds in subsequent passes.
+
 export interface ConsolidationConfig {
   /** Minimum cosine similarity to form a cluster (default 0.82) */
   clusterThreshold: number;

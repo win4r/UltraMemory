@@ -442,35 +442,46 @@ export class MemoryService {
       debug: params.debug,
     });
 
-    // Update access metadata only for manual recalls (not auto-recall)
+    // Post-retrieval metadata updates (serialized to avoid read-modify-write races).
+    // Each patch is awaited sequentially per entry so concurrent patchMetadata
+    // calls don't clobber each other's fields (access_count, tier, feedback).
     if (params.source !== "auto") {
       const now = Date.now();
       for (const r of results) {
         const meta = parseSmartMetadata(r.entry.metadata, r.entry);
-        this._store.patchMetadata(
+        // 1. Access count
+        await this._store.patchMetadata(
           r.entry.id,
           { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
           scopeFilter,
         ).catch(() => {});
-      }
-    }
 
-    // Lifecycle evaluation (all sources, not just auto)
-    if (this.decayEngine && this.tierManager) {
-      for (const r of results) {
-        const { memory, meta } = getDecayableFromEntry(r.entry);
-        const decayScore = this.decayEngine.score(memory, undefined, meta.memory_category);
-        const transition = this.tierManager.evaluate(memory, decayScore);
-        if (transition) {
-          this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
+        // 2. Lifecycle/tier evaluation
+        if (this.decayEngine && this.tierManager) {
+          const decayable = getDecayableFromEntry(r.entry);
+          const decayScore = this.decayEngine.score(decayable.memory, undefined, decayable.meta.memory_category);
+          const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+          if (transition) {
+            await this._store.patchMetadata(r.entry.id, { tier: transition.toTier }, scopeFilter).catch(() => {});
+          }
+        }
+
+        // 3. Positive feedback
+        if (this.feedbackLearner) {
+          await this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
         }
       }
-    }
-
-    // Positive feedback for manual recalls
-    if (params.source !== "auto" && this.feedbackLearner) {
-      for (const r of results) {
-        this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
+    } else {
+      // Auto-recall: still run lifecycle evaluation (but no access count bump / feedback)
+      if (this.decayEngine && this.tierManager) {
+        for (const r of results) {
+          const decayable = getDecayableFromEntry(r.entry);
+          const decayScore = this.decayEngine.score(decayable.memory, undefined, decayable.meta.memory_category);
+          const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+          if (transition) {
+            await this._store.patchMetadata(r.entry.id, { tier: transition.toTier }, scopeFilter).catch(() => {});
+          }
+        }
       }
     }
 

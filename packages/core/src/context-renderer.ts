@@ -81,7 +81,7 @@ function extractTerms(text: string): Set<string> {
     "during", "before", "after", "about", "between", "under", "above",
     "this", "that", "these", "those", "it", "its", "i", "me", "my",
     "we", "our", "you", "your", "he", "she", "they", "them", "and",
-    "or", "but", "if", "then", "so", "not", "no", "just", "also",
+    "or", "but", "if", "then", "so", "just", "also",
   ]);
   const words = text.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, " ").split(/\s+/);
   return new Set(words.filter(w => w.length > 2 && !stopWords.has(w)));

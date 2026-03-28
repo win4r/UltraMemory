@@ -130,7 +130,7 @@ export interface DecayEngine {
   /** Calculate decay score for a single memory */
   score(memory: DecayableMemory, now?: number, category?: string): DecayScore;
   /** Calculate decay scores for multiple memories */
-  scoreAll(memories: DecayableMemory[], now?: number): DecayScore[];
+  scoreAll(memories: DecayableMemory[], now?: number, categoryMap?: Map<string, string>): DecayScore[];
   /** Apply decay boost to search results (multiplies each score by boost) */
   applySearchBoost(
     results: Array<{ memory: DecayableMemory; score: number; category?: string }>,
@@ -140,6 +140,7 @@ export interface DecayEngine {
   getStaleMemories(
     memories: DecayableMemory[],
     now?: number,
+    categoryMap?: Map<string, string>,
   ): DecayScore[];
 }
 
@@ -279,8 +280,8 @@ export function createDecayEngine(
       return scoreOne(memory, now, category);
     },
 
-    scoreAll(memories, now = Date.now()) {
-      return memories.map((m) => scoreOne(m, now));
+    scoreAll(memories, now = Date.now(), categoryMap?) {
+      return memories.map((m) => scoreOne(m, now, categoryMap?.get(m.id)));
     },
 
     applySearchBoost(results, now = Date.now()) {
@@ -292,8 +293,8 @@ export function createDecayEngine(
       }
     },
 
-    getStaleMemories(memories, now = Date.now()) {
-      const scores = memories.map((m) => scoreOne(m, now));
+    getStaleMemories(memories, now = Date.now(), categoryMap?) {
+      const scores = memories.map((m) => scoreOne(m, now, categoryMap?.get(m.id)));
       return scores
         .filter((s) => s.composite < staleThreshold)
         .sort((a, b) => a.composite - b.composite);
