@@ -292,6 +292,28 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
 
   tools.push(
     {
+      name: "memory_auto_capture",
+      description:
+        "Extract and store memory-worthy items from conversation text. " +
+        "Uses heuristic pattern matching to identify preferences, identity, decisions, and corrections. " +
+        "Returns extracted items with their categories and storage status.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          conversationText: {
+            type: "string",
+            description: "The conversation text to analyze for memory-worthy content",
+          },
+          scope: {
+            type: "string",
+            description: "Scope for stored memories (default: global)",
+          },
+        },
+        required: ["conversationText"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: "memory_health",
       description: "Get corpus health metrics — category distribution, staleness, conflict count, tier balance, and source distribution",
       inputSchema: {

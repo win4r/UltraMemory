@@ -44,6 +44,9 @@ export * from "./noise-filter.js";
 export * from "./noise-prototypes.js";
 export * from "./auto-capture-cleanup.js";
 
+// Auto-capture (heuristic extraction for MCP)
+export { shouldCapture, extractHeuristic, type AutoCaptureItem, type AutoCaptureResult } from "./auto-capture.js";
+
 // Chunking
 export * from "./chunker.js";
 
@@ -129,6 +132,9 @@ export { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-
 
 // Consolidation engine
 export { ConsolidationEngine, DEFAULT_CONSOLIDATION_CONFIG, type ConsolidationConfig, type ConsolidationResult, type ConflictEvent } from "./consolidation-engine.js";
+
+// Contextual recall rendering
+export { renderMemories, type RenderMode, type RenderResult, type RenderedMemory, type RenderableMemory } from "./context-renderer.js";
 
 // Evaluation
 export { computeCorpusHealth, type CorpusHealth } from "./eval/corpus-health.js";

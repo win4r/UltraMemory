@@ -71,6 +71,10 @@ export interface RecallParams {
   source?: "manual" | "auto";
   /** Enable debug scoring trace. When true, each result includes a full scoringTrace breakdown. Default: false. */
   debug?: boolean;
+  /** Rendering mode: verbatim (default), highlight (reorder by contextual relevance), synthesize (LLM summary, falls back to highlight) */
+  render?: "verbatim" | "highlight" | "synthesize";
+  /** Optional task context hint for highlight/synthesize rendering modes */
+  taskContext?: string;
 }
 
 export interface ScoringTrace {
@@ -97,6 +101,8 @@ export interface RecallResult {
   timestamp: number;
   /** Scoring breakdown for explainability (when available) */
   scoringTrace?: ScoringTrace;
+  /** Contextual relevance score (0-1) when render mode is highlight or synthesize */
+  relevance?: number;
 }
 
 export interface UpdateParams {
@@ -742,6 +748,49 @@ export class MemoryService {
 
     log(`backfill-vectors: complete — ${done} updated, ${errors} errors`);
     return done;
+  }
+
+  // -----------------------------------------------------------------------
+  // Auto-capture (heuristic extraction for MCP — P1-2)
+  // -----------------------------------------------------------------------
+
+  async autoCapture(params: { conversationText: string; scope?: string }): Promise<{
+    skippedSalience: boolean;
+    stored: number;
+    items: Array<{ id: string; category: string; text: string; action: string }>;
+  }> {
+    this.ensureInitialized();
+
+    const { shouldCapture, extractHeuristic } = await import("@ultramemory/core");
+
+    if (!shouldCapture(params.conversationText)) {
+      return { skippedSalience: true, stored: 0, items: [] };
+    }
+
+    const extracted = extractHeuristic(params.conversationText);
+    if (extracted.length === 0) {
+      return { skippedSalience: false, stored: 0, items: [] };
+    }
+
+    const scope = params.scope || this.scopeManager.getDefaultScope?.("main") || "global";
+    const results: Array<{ id: string; category: string; text: string; action: string }> = [];
+
+    for (const item of extracted) {
+      const result = await this.pipeline.ingest({
+        text: item.text,
+        category: item.category as any,
+        importance: item.importance,
+        scope,
+        source: "auto-capture",
+      });
+      results.push({ id: result.id, category: item.category, text: item.text, action: result.action });
+    }
+
+    return {
+      skippedSalience: false,
+      stored: results.filter((r) => r.action === "created").length,
+      items: results,
+    };
   }
 
   // -----------------------------------------------------------------------
