@@ -17,6 +17,9 @@
     "proper-lockfile": "^4.1.2",
     "uuid": "^13.0.0"
   },
+  "devDependencies": {
+    "jiti": "^2.6.1"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"

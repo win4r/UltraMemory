@@ -66,6 +66,16 @@ export async function startMcpServer(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
         break;
+      case "memory_health":
+        result = await service.health(
+          (args as any).scope ? [(args as any).scope] : undefined,
+        );
+        break;
+      case "memory_conflicts":
+        result = await service.conflicts(
+          (args as any).scope ? [(args as any).scope] : undefined,
+        );
+        break;
       case "memory_checkpoint":
         result = await service.checkpoint({
           summary: (args as any).summary,

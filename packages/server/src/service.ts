@@ -34,7 +34,7 @@ import {
   type MemoryProvenance,
   getDecayableFromEntry,
 } from "@ultramemory/core";
-import { FeedbackLearner } from "@ultramemory/core";
+import { FeedbackLearner, IngestionPipeline, reverseMapLegacyCategory } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -52,11 +52,12 @@ export interface StoreParams {
 
 export interface StoreResult {
   id: string;
-  action: "created" | "duplicate" | "noise_filtered";
+  action: "created" | "duplicate" | "noise_filtered" | "conflict_detected";
   scope: string;
   category: string;
   importance: number;
   existingId?: string;
+  conflictWith?: string;
 }
 
 export interface RecallParams {
@@ -239,6 +240,7 @@ export class MemoryService {
   private decayEngine!: DecayEngine;
   private tierManager!: TierManager;
   private feedbackLearner?: FeedbackLearner;
+  private pipeline!: IngestionPipeline;
   private initialized = false;
 
   constructor(config: Partial<UltraMemoryConfig> & { embedding: UltraMemoryConfig["embedding"] }) {
@@ -299,11 +301,51 @@ export class MemoryService {
 
     this.scopeManager = createScopeManager(this.config.scopes);
 
+    this.pipeline = new IngestionPipeline({
+      store: this._store,
+      embedder: this.embedder,
+    });
+
     // Run migrations
     const migrator = createMigrator(this._store);
     await migrator.migrate().catch(() => {
       // Migration is best-effort — may fail on first run with empty DB
     });
+
+    // Category model unification: ensure all entries have memory_category.
+    // Sample first to skip when already migrated; paginate to handle large corpora.
+    try {
+      const { batchMigrateCategories } = await import("@ultramemory/core");
+      const sample = await this._store.list(undefined, undefined, 50, 0);
+      const needsMigration = sample.some((e) => {
+        try {
+          const parsed = JSON.parse(e.metadata || "{}");
+          return !parsed.memory_category;
+        } catch { return false; }
+      });
+
+      if (needsMigration) {
+        let offset = 0;
+        const batchSize = 500;
+        let totalMigrated = 0;
+        while (true) {
+          const batch = await this._store.list(undefined, undefined, batchSize, offset);
+          if (batch.length === 0) break;
+          const updates = batchMigrateCategories(batch as any);
+          for (const { id, updatedMetadata } of updates) {
+            await this._store.update(id, { metadata: updatedMetadata }).catch(() => {});
+          }
+          totalMigrated += updates.length;
+          offset += batchSize;
+          if (batch.length < batchSize) break;
+        }
+        if (totalMigrated > 0) {
+          process.stderr.write(`[MemoryService] migrated ${totalMigrated} entries to unified categories\n`);
+        }
+      }
+    } catch {
+      // Category migration is best-effort
+    }
 
     this.initialized = true;
   }
@@ -321,6 +363,7 @@ export class MemoryService {
     this.decayEngine = null!;
     this.tierManager = null!;
     this.feedbackLearner = undefined;
+    this.pipeline = null!;
     this.initialized = false;
 
     process.stderr.write("[MemoryService] shutdown complete\n");
@@ -337,81 +380,36 @@ export class MemoryService {
   async store(params: StoreParams): Promise<StoreResult> {
     this.ensureInitialized();
 
-    const text = params.text;
-    const category = (params.category || "other") as MemoryEntry["category"];
+    const category = (params.category || "other") as string;
     const scope = params.scope || this.scopeManager.getDefaultScope?.("main") || "global";
     const importance = clamp01(params.importance ?? 0.7);
 
-    // Noise check
-    if (isNoise(text)) {
-      return { id: "", action: "noise_filtered", scope, category, importance };
-    }
+    // Map legacy store category to MemoryCategory for pipeline
+    const memoryCategory = reverseMapLegacyCategory(category as any, params.text);
 
-    // Embed
-    const vector = await this.embedder.embedPassage(text);
-
-    // Duplicate check (fail-open — errors don't block storage)
-    try {
-      const existing = await this._store.vectorSearch(vector, 1, 0.1, [scope], { excludeInactive: true });
-      if (existing.length > 0 && existing[0].score > 0.98) {
-        return {
-          id: existing[0].entry.id,
-          action: "duplicate",
-          scope,
-          category,
-          importance,
-          existingId: existing[0].entry.id,
-        };
-      }
-    } catch {
-      // fail-open
-    }
-
-    // Build metadata with optional provenance
-    const meta = parseSmartMetadata("{}", { text, category, importance } as any);
-    const l0 = (meta as any).l0_abstract || text;
-    const l1 = (meta as any).l1_overview || `- ${text}`;
-    const l2 = (meta as any).l2_content || text;
-
-    const metadataPatch: Record<string, unknown> = {
-      l0_abstract: l0,
-      l1_overview: l1,
-      l2_content: l2,
-      source: "manual",
-      state: "confirmed",
-      last_confirmed_use_at: Date.now(),
-    };
-    if (params.provenance) {
-      metadataPatch.provenance = {
-        ...params.provenance,
-        date: params.provenance.date || new Date().toISOString().slice(0, 10),
-      };
-    }
-    const metadata = stringifySmartMetadata(
-      buildSmartMetadata({ text, category, importance }, metadataPatch as any),
-    );
-
-    // Embed multi-layer vectors (reuses main vector when layer text === text)
-    const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(text, vector, l0, l1, l2);
-
-    const entry = await this._store.store({
-      text,
-      vector,
-      category,
-      scope,
+    const result = await this.pipeline.ingest({
+      text: params.text,
+      category: memoryCategory,
       importance,
-      metadata,
-      vector_l0: vectorL0,
-      vector_l1: vectorL1,
-      vector_l2: vectorL2,
+      scope,
+      source: "manual",
+      conflictStrategy: "coexist",
     });
 
+    // Map pipeline result back to StoreResult
+    // "superseded" means a new record was created that supersedes an old one — surface as "created".
+    // "conflict_detected" means coexist/ask strategy found a conflict but did NOT store — pass through.
+    const action = result.action === "superseded" ? "created" as const
+      : result.action as StoreResult["action"];
+
     return {
-      id: entry.id,
-      action: "created",
+      id: result.id,
+      action,
       scope,
       category,
       importance,
+      existingId: result.action === "duplicate" ? result.id : undefined,
+      conflictWith: result.conflictWith,
     };
   }
 
@@ -446,9 +444,9 @@ export class MemoryService {
     // Lifecycle evaluation (all sources, not just auto)
     if (this.decayEngine && this.tierManager) {
       for (const r of results) {
-        const decayable = getDecayableFromEntry(r.entry);
-        const decayScore = this.decayEngine.score(decayable.memory);
-        const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+        const { memory, meta } = getDecayableFromEntry(r.entry);
+        const decayScore = this.decayEngine.score(memory, undefined, meta.memory_category);
+        const transition = this.tierManager.evaluate(memory, decayScore);
         if (transition) {
           this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
         }
@@ -512,6 +510,11 @@ export class MemoryService {
     });
   }
 
+  // NOTE: update() intentionally bypasses IngestionPipeline. The pipeline handles
+  // new memory creation (with dedup, conflict detection, and relation linking).
+  // update() patches existing records in-place (text, importance, category).
+  // For temporal fact updates (e.g., "user now prefers Python"), callers should
+  // use store() which routes through the pipeline with conflict detection.
   async update(params: UpdateParams): Promise<UpdateResult> {
     this.ensureInitialized();
 
@@ -623,6 +626,42 @@ export class MemoryService {
   async stats(scopeFilter?: string[]): Promise<StatsResult> {
     this.ensureInitialized();
     return this._store.stats(scopeFilter);
+  }
+
+  async health(scopeFilter?: string[]): Promise<import("@ultramemory/core").CorpusHealth> {
+    this.ensureInitialized();
+    const entries = await this._store.list(scopeFilter, undefined, 10000, 0);
+    const { computeCorpusHealth } = await import("@ultramemory/core");
+    return computeCorpusHealth(entries as any);
+  }
+
+  async conflicts(scopeFilter?: string[]): Promise<Array<{ id: string; text: string; conflictWith: string[] }>> {
+    this.ensureInitialized();
+    const entries = await this._store.list(scopeFilter, undefined, 10000, 0);
+    const conflicts: Array<{ id: string; text: string; conflictWith: string[] }> = [];
+
+    for (const entry of entries) {
+      const meta = parseSmartMetadata(entry.metadata, entry);
+      const conflictIds: string[] = [];
+      // Check relations for contradicts and supersedes
+      if (meta.relations) {
+        for (const rel of meta.relations as any[]) {
+          if (rel.type === "contradicts" || rel.type === "supersedes") {
+            conflictIds.push(rel.targetId);
+          }
+        }
+      }
+      // Check supersedes/superseded_by fields
+      if (meta.supersedes) conflictIds.push(meta.supersedes);
+      if (meta.superseded_by) conflictIds.push(meta.superseded_by);
+      // Dedup
+      const unique = [...new Set(conflictIds)];
+      if (unique.length > 0) {
+        conflicts.push({ id: entry.id, text: entry.text.slice(0, 200), conflictWith: unique });
+      }
+    }
+
+    return conflicts;
   }
 
   async feedback(params: { id: string; helpful: boolean }): Promise<{ ok: boolean; id: string }> {

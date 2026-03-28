@@ -16,6 +16,12 @@ import type { MemoryTier } from "./memory-categories.js";
 
 const MS_PER_DAY = 86_400_000;
 
+export interface RetentionPolicy {
+  minRetentionDays: number;
+  decayMultiplier: number;
+  maxRetentionDays?: number;
+}
+
 export interface DecayConfig {
   /** Days until recency score halves (default: 30) */
   recencyHalfLifeDays: number;
@@ -43,6 +49,8 @@ export interface DecayConfig {
   workingDecayFloor: number;
   /** Decay floor for Peripheral memories (default: 0.5) */
   peripheralDecayFloor: number;
+  /** Category-specific retention policies */
+  retentionPolicies?: Partial<Record<string, RetentionPolicy>>;
 }
 
 export const DEFAULT_DECAY_CONFIG: DecayConfig = {
@@ -83,12 +91,12 @@ export interface DecayableMemory {
 
 export interface DecayEngine {
   /** Calculate decay score for a single memory */
-  score(memory: DecayableMemory, now?: number): DecayScore;
+  score(memory: DecayableMemory, now?: number, category?: string): DecayScore;
   /** Calculate decay scores for multiple memories */
   scoreAll(memories: DecayableMemory[], now?: number): DecayScore[];
   /** Apply decay boost to search results (multiplies each score by boost) */
   applySearchBoost(
-    results: Array<{ memory: DecayableMemory; score: number }>,
+    results: Array<{ memory: DecayableMemory; score: number; category?: string }>,
     now?: number,
   ): void;
   /** Find stale memories (composite below threshold) */
@@ -103,8 +111,9 @@ export interface DecayEngine {
 // ============================================================================
 
 export function createDecayEngine(
-  config: DecayConfig = DEFAULT_DECAY_CONFIG,
+  config: Partial<DecayConfig> = {},
 ): DecayEngine {
+  const merged = { ...DEFAULT_DECAY_CONFIG, ...config };
   const {
     recencyHalfLifeDays: halfLife,
     recencyWeight: rw,
@@ -119,7 +128,8 @@ export function createDecayEngine(
     coreDecayFloor,
     workingDecayFloor,
     peripheralDecayFloor,
-  } = config;
+    retentionPolicies,
+  } = merged;
 
   function getTierBeta(tier: MemoryTier): number {
     switch (tier) {
@@ -188,11 +198,35 @@ export function createDecayEngine(
     return memory.importance * (memory.confidence ?? 1) * feedbackMultiplier;
   }
 
-  function scoreOne(memory: DecayableMemory, now: number): DecayScore {
+  function scoreOne(memory: DecayableMemory, now: number, category?: string): DecayScore {
     const r = recency(memory, now);
     const f = frequency(memory);
     const i = intrinsic(memory);
-    const composite = rw * r + fw * f + iw * i;
+    let composite = rw * r + fw * f + iw * i;
+
+    // Apply retention policy if category provided
+    if (category && retentionPolicies?.[category]) {
+      const policy = retentionPolicies[category]!;
+      const ageDays = (now - memory.createdAt) / MS_PER_DAY;
+
+      if (policy.maxRetentionDays && ageDays > policy.maxRetentionDays) {
+        composite = Math.min(composite, 0.05); // Force near-stale
+      } else if (ageDays <= policy.minRetentionDays) {
+        composite = Math.max(composite, 0.95);
+      } else if (policy.decayMultiplier > 0 && policy.decayMultiplier !== 1.0) {
+        // Recompute recency with modified half-life
+        const modifiedHL = halfLife / policy.decayMultiplier;
+        const effHL = modifiedHL * Math.exp(mu * memory.importance);
+        const modLambda = Math.LN2 / effHL;
+        const beta = getTierBeta(memory.tier);
+        const modRecency = Math.exp(-modLambda * Math.pow(ageDays, beta));
+        composite = rw * modRecency + fw * f + iw * i;
+      }
+    }
+
+    // Apply tier floor to prevent floor-protected memories from appearing stale
+    const tierFloor = getTierFloor(memory.tier);
+    composite = Math.max(composite, tierFloor);
 
     return {
       memoryId: memory.id,
@@ -204,8 +238,8 @@ export function createDecayEngine(
   }
 
   return {
-    score(memory, now = Date.now()) {
-      return scoreOne(memory, now);
+    score(memory, now = Date.now(), category?) {
+      return scoreOne(memory, now, category);
     },
 
     scoreAll(memories, now = Date.now()) {
@@ -214,9 +248,9 @@ export function createDecayEngine(
 
     applySearchBoost(results, now = Date.now()) {
       for (const r of results) {
-        const ds = scoreOne(r.memory, now);
-        const tierFloor = Math.max(getTierFloor(r.memory.tier), ds.composite);
-        const multiplier = boostMin + ((1 - boostMin) * tierFloor);
+        const ds = scoreOne(r.memory, now, r.category);
+        // scoreOne already applies tier floor, so ds.composite >= tierFloor
+        const multiplier = boostMin + ((1 - boostMin) * ds.composite);
         r.score *= Math.min(1, Math.max(boostMin, multiplier));
       }
     },

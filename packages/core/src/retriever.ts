@@ -1350,10 +1350,14 @@ export class MemoryRetriever {
   private applyDecayBoost(results: RetrievalResult[], debug?: boolean): RetrievalResult[] {
     if (!this.decayEngine || results.length === 0) return results;
 
-    const scored = results.map((result) => ({
-      memory: toLifecycleMemory(result.entry.id, result.entry),
-      score: result.score,
-    }));
+    const scored = results.map((result) => {
+      const meta = parseSmartMetadata(result.entry.metadata, result.entry);
+      return {
+        memory: toLifecycleMemory(result.entry.id, result.entry),
+        score: result.score,
+        category: meta.memory_category,
+      };
+    });
 
     this.decayEngine.applySearchBoost(scored);
 
@@ -1465,11 +1469,11 @@ export class MemoryRetriever {
 
     const now = Date.now();
     const pairs = results.map(r => {
-      const { memory } = getDecayableFromEntry(r.entry);
-      return { r, memory };
+      const { memory, meta } = getDecayableFromEntry(r.entry);
+      return { r, memory, category: meta.memory_category };
     });
 
-    const scored = pairs.map(p => ({ memory: p.memory, score: p.r.score }));
+    const scored = pairs.map(p => ({ memory: p.memory, score: p.r.score, category: p.category }));
     this.decayEngine.applySearchBoost(scored, now);
 
     const boosted = pairs.map((p, i) => ({ ...p.r, score: scored[i].score }));
@@ -1513,7 +1517,7 @@ export class MemoryRetriever {
 
       // Tier transition (optional)
       if (this.decayEngine && this.tierManager) {
-        const ds = this.decayEngine.score(updatedMemory, now);
+        const ds = this.decayEngine.score(updatedMemory, now, meta.memory_category);
         const transition = this.tierManager.evaluate(updatedMemory, ds, now);
         if (transition) {
           meta.tier = transition.toTier;

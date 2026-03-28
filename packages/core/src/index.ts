@@ -36,6 +36,9 @@ export * from "./tier-manager.js";
 // Memory categories
 export * from "./memory-categories.js";
 
+// Category migration
+export { migrateCategoryForEntry, batchMigrateCategories } from "./category-migrator.js";
+
 // Noise filtering
 export * from "./noise-filter.js";
 export * from "./noise-prototypes.js";
@@ -117,6 +120,16 @@ export * from "./entity-resolver.js";
 
 // Deterministic IDs
 export * from "./utils/deterministic-id.js";
+
+// Ingestion pipeline
+export { IngestionPipeline, type IngestionInput, type IngestionResult, type IngestionAction } from "./ingestion-pipeline.js";
+
+// Conflict detection
+export { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-detector.js";
+
+// Evaluation
+export { computeCorpusHealth, type CorpusHealth } from "./eval/corpus-health.js";
+export { scoreBenchmarkResult, computeSuiteMetrics, type BenchmarkQuery, type QueryScore, type SuiteMetrics } from "./eval/benchmark.js";
 
 // Tools (registration functions for OpenClaw plugin)
 // tools.ts re-declares MEMORY_CATEGORIES — canonical is memory-categories.ts

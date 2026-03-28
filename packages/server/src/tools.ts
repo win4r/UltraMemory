@@ -290,6 +290,31 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
     },
   ];
 
+  tools.push(
+    {
+      name: "memory_health",
+      description: "Get corpus health metrics — category distribution, staleness, conflict count, tier balance, and source distribution",
+      inputSchema: {
+        type: "object",
+        properties: {
+          scope: { type: "string", description: "Filter by scope" },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "memory_conflicts",
+      description: "List unresolved memory conflicts — memories that contradict each other",
+      inputSchema: {
+        type: "object",
+        properties: {
+          scope: { type: "string", description: "Filter by scope" },
+        },
+        additionalProperties: false,
+      },
+    },
+  );
+
   if (opts?.enableFeedbackTool) {
     tools.push({
       name: "memory_feedback",

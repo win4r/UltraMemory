@@ -41,3 +41,31 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run unit tests (pure, no LanceDB/external deps)
+        run: |
+          cd packages/core
+          node --test \
+            test/corpus-health.test.mjs \
+            test/benchmark.test.mjs \
+            test/trust-level.test.mjs \
+            test/conflict-detector.test.mjs \
+            test/ingestion-pipeline.test.mjs \
+            test/category-migration.test.mjs \
+            test/decay-retention.test.mjs \
+            test/feedback-learner.test.mjs \
+            test/deterministic-id.test.mjs \
+            test/scoring-trace.test.mjs \
+            test/relation-boost.test.mjs \
+            test/category-thresholds.test.mjs \
+            test/entity-resolver.test.mjs
