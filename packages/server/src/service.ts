@@ -33,7 +33,7 @@ import {
   isNoise,
   getDecayableFromEntry,
 } from "@ultramemory/core";
-import { FeedbackLearner } from "@ultramemory/core";
+import { FeedbackLearner, IngestionPipeline, reverseMapLegacyCategory } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,7 @@ export interface StoreResult {
   category: string;
   importance: number;
   existingId?: string;
+  conflictWith?: string;
 }
 
 export interface RecallParams {
@@ -152,6 +153,7 @@ export class MemoryService {
   private decayEngine!: DecayEngine;
   private tierManager!: TierManager;
   private feedbackLearner?: FeedbackLearner;
+  private pipeline!: IngestionPipeline;
   private initialized = false;
 
   constructor(config: Partial<UltraMemoryConfig> & { embedding: UltraMemoryConfig["embedding"] }) {
@@ -212,6 +214,11 @@ export class MemoryService {
 
     this.scopeManager = createScopeManager(this.config.scopes);
 
+    this.pipeline = new IngestionPipeline({
+      store: this._store,
+      embedder: this.embedder,
+    });
+
     // Run migrations
     const migrator = createMigrator(this._store);
     await migrator.migrate().catch(() => {
@@ -234,6 +241,7 @@ export class MemoryService {
     this.decayEngine = null!;
     this.tierManager = null!;
     this.feedbackLearner = undefined;
+    this.pipeline = null!;
     this.initialized = false;
 
     process.stderr.write("[MemoryService] shutdown complete\n");
@@ -250,77 +258,35 @@ export class MemoryService {
   async store(params: StoreParams): Promise<StoreResult> {
     this.ensureInitialized();
 
-    const text = params.text;
-    const category = (params.category || "other") as MemoryEntry["category"];
+    const category = (params.category || "other") as string;
     const scope = params.scope || this.scopeManager.getDefaultScope?.("main") || "global";
     const importance = clamp01(params.importance ?? 0.7);
 
-    // Noise check
-    if (isNoise(text)) {
-      return { id: "", action: "noise_filtered", scope, category, importance };
-    }
+    // Map legacy store category to MemoryCategory for pipeline
+    const memoryCategory = reverseMapLegacyCategory(category as any, params.text);
 
-    // Embed
-    const vector = await this.embedder.embedPassage(text);
-
-    // Duplicate check (fail-open — errors don't block storage)
-    try {
-      const existing = await this._store.vectorSearch(vector, 1, 0.1, [scope], { excludeInactive: true });
-      if (existing.length > 0 && existing[0].score > 0.98) {
-        return {
-          id: existing[0].entry.id,
-          action: "duplicate",
-          scope,
-          category,
-          importance,
-          existingId: existing[0].entry.id,
-        };
-      }
-    } catch {
-      // fail-open
-    }
-
-    // Build metadata
-    const meta = parseSmartMetadata("{}", { text, category, importance } as any);
-    const l0 = (meta as any).l0_abstract || text;
-    const l1 = (meta as any).l1_overview || `- ${text}`;
-    const l2 = (meta as any).l2_content || text;
-
-    const metadata = stringifySmartMetadata(
-      buildSmartMetadata(
-        { text, category, importance },
-        {
-          l0_abstract: l0,
-          l1_overview: l1,
-          l2_content: l2,
-          source: "manual",
-          state: "confirmed",
-          last_confirmed_use_at: Date.now(),
-        },
-      ),
-    );
-
-    // Embed multi-layer vectors (reuses main vector when layer text === text)
-    const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(text, vector, l0, l1, l2);
-
-    const entry = await this._store.store({
-      text,
-      vector,
-      category,
-      scope,
+    const result = await this.pipeline.ingest({
+      text: params.text,
+      category: memoryCategory,
       importance,
-      metadata,
-      vector_l0: vectorL0,
-      vector_l1: vectorL1,
-      vector_l2: vectorL2,
+      scope,
+      source: "manual",
+      conflictStrategy: "coexist",
     });
 
+    // Map pipeline result back to StoreResult
+    const action = result.action === "conflict_detected" ? "created" as const
+      : result.action === "superseded" ? "created" as const
+      : result.action as StoreResult["action"];
+
     return {
-      id: entry.id,
-      action: "created",
+      id: result.id,
+      action,
       scope,
       category,
       importance,
+      existingId: result.action === "duplicate" ? result.id : undefined,
+      conflictWith: result.conflictWith,
     };
   }
 
