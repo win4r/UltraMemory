@@ -5,10 +5,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { MemoryService } from "./service.js";
+import type { UltraMemoryConfig } from "./config.js";
 import { createMcpToolDefinitions } from "./tools.js";
 
 export async function startMcpServer(
   service: MemoryService,
+  config?: Pick<UltraMemoryConfig, "enableFeedbackTool">,
 ): Promise<Server> {
   const server = new Server(
     { name: "ultramemory", version: "0.1.0" },
@@ -16,7 +18,7 @@ export async function startMcpServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: createMcpToolDefinitions(),
+    tools: createMcpToolDefinitions({ enableFeedbackTool: config?.enableFeedbackTool }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -63,6 +65,12 @@ export async function startMcpServer(
         result = await service.stats(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
+        break;
+      case "memory_feedback":
+        result = await service.feedback({
+          id: (args as any).id,
+          helpful: (args as any).helpful,
+        });
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);

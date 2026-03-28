@@ -109,6 +109,15 @@ export * from "./workspace-boundary.js";
 // ClawTeam scopes
 export * from "./clawteam-scope.js";
 
+// Feedback learning
+export * from "./feedback-learner.js";
+
+// Entity resolution
+export * from "./entity-resolver.js";
+
+// Deterministic IDs
+export * from "./utils/deterministic-id.js";
+
 // Tools (registration functions for OpenClaw plugin)
 // tools.ts re-declares MEMORY_CATEGORIES — canonical is memory-categories.ts
 export {

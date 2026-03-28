@@ -4,8 +4,8 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
-export function createMcpToolDefinitions(): McpToolDefinition[] {
-  return [
+export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }): McpToolDefinition[] {
+  const tools: McpToolDefinition[] = [
     {
       name: "memory_store",
       description: "Store a new memory",
@@ -168,4 +168,29 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
       },
     },
   ];
+
+  if (opts?.enableFeedbackTool) {
+    tools.push({
+      name: "memory_feedback",
+      description:
+        "Record feedback on a recalled memory. Positive feedback makes the memory more prominent in future recalls; negative feedback makes it fade faster.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Memory ID to provide feedback on",
+          },
+          helpful: {
+            type: "boolean",
+            description: "Was this memory helpful? true = positive, false = negative",
+          },
+        },
+        required: ["id", "helpful"],
+        additionalProperties: false,
+      },
+    });
+  }
+
+  return tools;
 }

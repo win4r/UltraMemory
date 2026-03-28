@@ -49,6 +49,7 @@ import {
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
 import { inferAtomicBrandItemPreferenceSlot } from "./preference-slots.js";
+import { EntityResolver } from "./entity-resolver.js";
 
 // ============================================================================
 // Envelope Metadata Stripping
@@ -137,6 +138,8 @@ export interface SmartExtractorConfig {
   admissionControl?: AdmissionControlConfig;
   /** Optional sink for durable reject-audit logging. */
   onAdmissionRejected?: (entry: AdmissionRejectionAuditEntry) => Promise<void> | void;
+  /** Optional entity resolver for normalizing entity names in fact_key generation. */
+  entityResolver?: EntityResolver;
 }
 
 export interface ExtractPersistOptions {
@@ -929,8 +932,11 @@ export class SmartExtractor {
 
     const now = Date.now();
     const existingMeta = parseSmartMetadata(existing.metadata, existing);
+    const normalizedAbstract = this.config.entityResolver
+      ? this.config.entityResolver.resolve(candidate.abstract ?? "")
+      : (candidate.abstract ?? "");
     const factKey =
-      existingMeta.fact_key ?? deriveFactKey(candidate.category, candidate.abstract);
+      existingMeta.fact_key ?? deriveFactKey(candidate.category, normalizedAbstract);
     const storeCategory = this.mapToStoreCategory(candidate.category);
     const created = await this.store.store({
       text: candidate.abstract,
@@ -1061,7 +1067,7 @@ export class SmartExtractor {
       relations: [{ type: "contextualizes", targetId: matchId }],
     }, admissionAudit));
 
-    await this.store.store({
+    const newEntry = await this.store.store({
       text: candidate.abstract,
       vector,
       category: storeCategory,
@@ -1069,6 +1075,19 @@ export class SmartExtractor {
       importance: this.getDefaultImportance(candidate.category),
       metadata,
     });
+
+    // Bidirectional relation: patch the existing memory to point back to the new entry
+    try {
+      const existing = await this.store.getById(matchId, scopeFilter);
+      if (existing) {
+        const existingMeta = parseSmartMetadata(existing.metadata, existing);
+        await this.store.patchMetadata(matchId, {
+          relations: appendRelation(existingMeta.relations ?? [], { type: "related_to", targetId: newEntry.id }),
+        }, scopeFilter);
+      }
+    } catch {
+      // Non-critical: new entry was stored successfully; reverse relation is best-effort
+    }
 
     this.log(
       `memory-pro: smart-extractor: contextualize [${contextLabel || "general"}] new entry linked to ${matchId.slice(0, 8)}`,
