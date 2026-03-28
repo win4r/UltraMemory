@@ -225,16 +225,36 @@ export class MemoryService {
       // Migration is best-effort — may fail on first run with empty DB
     });
 
-    // Category model unification: ensure all entries have memory_category
+    // Category model unification: ensure all entries have memory_category.
+    // Sample first to skip when already migrated; paginate to handle large corpora.
     try {
       const { batchMigrateCategories } = await import("@ultramemory/core");
-      const allEntries = await this._store.list(undefined, undefined, 10000, 0);
-      const categoryUpdates = batchMigrateCategories(allEntries as any);
-      for (const { id, updatedMetadata } of categoryUpdates) {
-        await this._store.update(id, { metadata: updatedMetadata }).catch(() => {});
-      }
-      if (categoryUpdates.length > 0) {
-        process.stderr.write(`[MemoryService] migrated ${categoryUpdates.length} entries to unified categories\n`);
+      const sample = await this._store.list(undefined, undefined, 50, 0);
+      const needsMigration = sample.some((e) => {
+        try {
+          const parsed = JSON.parse(e.metadata || "{}");
+          return !parsed.memory_category;
+        } catch { return false; }
+      });
+
+      if (needsMigration) {
+        let offset = 0;
+        const batchSize = 500;
+        let totalMigrated = 0;
+        while (true) {
+          const batch = await this._store.list(undefined, undefined, batchSize, offset);
+          if (batch.length === 0) break;
+          const updates = batchMigrateCategories(batch as any);
+          for (const { id, updatedMetadata } of updates) {
+            await this._store.update(id, { metadata: updatedMetadata }).catch(() => {});
+          }
+          totalMigrated += updates.length;
+          offset += batchSize;
+          if (batch.length < batchSize) break;
+        }
+        if (totalMigrated > 0) {
+          process.stderr.write(`[MemoryService] migrated ${totalMigrated} entries to unified categories\n`);
+        }
       }
     } catch {
       // Category migration is best-effort
