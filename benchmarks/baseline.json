@@ -1,0 +1,11 @@
+{
+  "version": "v2-baseline",
+  "date": "2026-03-28",
+  "note": "Baseline to be populated after first benchmark run on real corpus",
+  "metrics": {
+    "recall_at_5": null,
+    "precision_at_5": null,
+    "mrr": null,
+    "conflictContamination": null
+  }
+}
