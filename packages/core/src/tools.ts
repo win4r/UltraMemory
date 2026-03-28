@@ -1942,3 +1942,54 @@ export function registerAllMemoryTools(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Ephemeral mode stubs (backward-compat with root index.ts)
+// ---------------------------------------------------------------------------
+// Root index.ts imports these for its ephemeral/pause functionality.
+// In the modular architecture these live in the adapter, but we re-export
+// stubs here so the legacy entry point can load without errors.
+
+let _ephemeralActive = false;
+
+/**
+ * Returns true when ephemeral mode (memory_pause) is active.
+ * Stub for backward-compatibility with root index.ts.
+ */
+export function isEphemeral(): boolean {
+  return _ephemeralActive;
+}
+
+/**
+ * Registers the memory_pause / memory_resume tools that toggle ephemeral mode.
+ * Stub for backward-compatibility with root index.ts.
+ */
+export function registerEphemeralTools(api: OpenClawPluginApi): void {
+  api.registerTool(
+    (_toolCtx: any) => ({
+      name: "memory_pause",
+      label: "Memory Pause",
+      description: "Temporarily pause auto-capture. Memories will not be stored until resumed.",
+      parameters: Type.Object({}),
+      async execute() {
+        _ephemeralActive = true;
+        return { content: [{ type: "text" as const, text: "Memory auto-capture paused (ephemeral mode ON)." }] };
+      },
+    }),
+    { name: "memory_pause" },
+  );
+  api.registerTool(
+    (_toolCtx: any) => ({
+      name: "memory_resume",
+      label: "Memory Resume",
+      description: "Resume auto-capture after a pause.",
+      parameters: Type.Object({}),
+      async execute() {
+        _ephemeralActive = false;
+        return { content: [{ type: "text" as const, text: "Memory auto-capture resumed (ephemeral mode OFF)." }] };
+      },
+    }),
+    { name: "memory_resume" },
+  );
+  api.logger?.info?.("memory-lancedb-pro: ephemeral tools registered (memory_pause, memory_resume)");
+}
