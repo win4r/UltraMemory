@@ -49,7 +49,7 @@ export interface StoreParams {
 
 export interface StoreResult {
   id: string;
-  action: "created" | "duplicate" | "noise_filtered";
+  action: "created" | "duplicate" | "noise_filtered" | "conflict_detected";
   scope: string;
   category: string;
   importance: number;
@@ -310,8 +310,9 @@ export class MemoryService {
     });
 
     // Map pipeline result back to StoreResult
-    const action = result.action === "conflict_detected" ? "created" as const
-      : result.action === "superseded" ? "created" as const
+    // "superseded" means a new record was created that supersedes an old one — surface as "created".
+    // "conflict_detected" means coexist/ask strategy found a conflict but did NOT store — pass through.
+    const action = result.action === "superseded" ? "created" as const
       : result.action as StoreResult["action"];
 
     return {
@@ -356,9 +357,9 @@ export class MemoryService {
     // Lifecycle evaluation (all sources, not just auto)
     if (this.decayEngine && this.tierManager) {
       for (const r of results) {
-        const decayable = getDecayableFromEntry(r.entry);
-        const decayScore = this.decayEngine.score(decayable.memory);
-        const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+        const { memory, meta } = getDecayableFromEntry(r.entry);
+        const decayScore = this.decayEngine.score(memory, undefined, meta.memory_category);
+        const transition = this.tierManager.evaluate(memory, decayScore);
         if (transition) {
           this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
         }
@@ -550,13 +551,21 @@ export class MemoryService {
     for (const entry of entries) {
       const meta = parseSmartMetadata(entry.metadata, entry);
       const conflictIds: string[] = [];
+      // Check relations for contradicts and supersedes
       if (meta.relations) {
         for (const rel of meta.relations as any[]) {
-          if (rel.type === "contradicts") conflictIds.push(rel.targetId);
+          if (rel.type === "contradicts" || rel.type === "supersedes") {
+            conflictIds.push(rel.targetId);
+          }
         }
       }
-      if (conflictIds.length > 0) {
-        conflicts.push({ id: entry.id, text: entry.text.slice(0, 200), conflictWith: conflictIds });
+      // Check supersedes/superseded_by fields
+      if (meta.supersedes) conflictIds.push(meta.supersedes);
+      if (meta.superseded_by) conflictIds.push(meta.superseded_by);
+      // Dedup
+      const unique = [...new Set(conflictIds)];
+      if (unique.length > 0) {
+        conflicts.push({ id: entry.id, text: entry.text.slice(0, 200), conflictWith: unique });
       }
     }
 

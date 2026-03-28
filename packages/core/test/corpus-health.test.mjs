@@ -62,7 +62,7 @@ describe("computeCorpusHealth", () => {
           feedback_weight: 0.4,
         }),
       }),
-      // Active entry with conflict
+      // Active entry with conflict (supersedes a4)
       makeEntry({
         id: "a3",
         importance: 0.7,
@@ -74,7 +74,7 @@ describe("computeCorpusHealth", () => {
           confidence: 0.7,
           access_count: 3,
           feedback_weight: 0.5,
-          conflict_with: "a4",
+          supersedes: "a4",
         }),
       }),
       // Archived entry
