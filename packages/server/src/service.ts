@@ -476,7 +476,7 @@ export class MemoryService {
 
     const depth = params.depth || "full";
 
-    return results.map((r) => {
+    const mapped = results.map((r) => {
       // L0/L1/L2 dynamic depth loading — return appropriate content tier
       const meta = parseSmartMetadata(r.entry.metadata, r.entry);
       let text: string;
@@ -520,8 +520,28 @@ export class MemoryService {
         score: r.score,
         timestamp: r.entry.timestamp,
         scoringTrace,
-      };
+      } as RecallResult;
     });
+
+    // Apply contextual rendering if requested
+    if (params.render && params.render !== "verbatim" && mapped.length > 0) {
+      const { renderMemories } = await import("@ultramemory/core");
+      const rendered = renderMemories(
+        mapped.map(r => ({ id: r.id, text: r.text, score: r.score, category: r.category })),
+        params.query,
+        params.render,
+        params.taskContext,
+      );
+      // Reorder results to match rendered order and add relevance
+      const renderedMap = new Map(rendered.memories.map((m: { id: string; relevance: number }, i: number) => [m.id, { ...m, order: i }]));
+      mapped.sort((a, b) => (renderedMap.get(a.id)?.order ?? 99) - (renderedMap.get(b.id)?.order ?? 99));
+      for (const r of mapped) {
+        const rm = renderedMap.get(r.id);
+        if (rm) r.relevance = rm.relevance;
+      }
+    }
+
+    return mapped;
   }
 
   // NOTE: update() intentionally bypasses IngestionPipeline. The pipeline handles

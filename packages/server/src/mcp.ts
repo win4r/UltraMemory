@@ -38,6 +38,8 @@ export async function startMcpServer(
             : undefined,
           category: (args as any).category,
           depth: (args as any).depth,
+          render: (args as any).render,
+          taskContext: (args as any).taskContext,
         });
         break;
       case "memory_update":

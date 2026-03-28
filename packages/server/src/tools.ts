@@ -81,6 +81,15 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
             description: "Content depth: l0 (one-sentence ~100 tokens), l1 (bullet list ~2K tokens), l2/full (complete text). Default: full",
             enum: ["l0", "l1", "l2", "full"],
           },
+          render: {
+            type: "string",
+            enum: ["verbatim", "highlight", "synthesize"],
+            description: "Rendering mode: verbatim (default), highlight (reorder by relevance), synthesize (LLM summary, falls back to highlight)",
+          },
+          taskContext: {
+            type: "string",
+            description: "Optional task context hint for highlight/synthesize modes",
+          },
         },
         required: ["query"],
         additionalProperties: false,
