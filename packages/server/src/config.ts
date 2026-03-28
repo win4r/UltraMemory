@@ -47,6 +47,7 @@ export interface RetrievalConfig {
   timeDecayHalfLifeDays?: number;
   reinforcementFactor?: number;
   maxHalfLifeMultiplier?: number;
+  categoryScoreThresholds?: Record<string, number>;
 }
 
 export interface DecayConfig {
@@ -58,6 +59,7 @@ export interface DecayConfig {
   staleThreshold?: number;
   searchBoostMin?: number;
   importanceModulation?: number;
+  feedbackAlpha?: number;  // default 0.15
 }
 
 export interface TierConfig {
@@ -85,6 +87,8 @@ export interface UltraMemoryConfig {
   tier?: TierConfig;
   scopes?: ScopeConfig;
   smartExtraction?: boolean;
+  entityAliases?: Record<string, string>;
+  enableFeedbackTool?: boolean;  // default false
 }
 
 const DEFAULT_DB_PATH = join(homedir(), ".ultramemory", "db");
@@ -111,6 +115,7 @@ export function resolveConfig(
     tier: partial.tier,
     scopes: partial.scopes,
     smartExtraction: partial.smartExtraction ?? true,
+    enableFeedbackTool: partial.enableFeedbackTool ?? false,
   };
 }
 

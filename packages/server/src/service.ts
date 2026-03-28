@@ -31,7 +31,10 @@ import {
   stringifySmartMetadata,
   toLifecycleMemory,
   isNoise,
+  type MemoryProvenance,
+  getDecayableFromEntry,
 } from "@ultramemory/core";
+import { FeedbackLearner } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +46,8 @@ export interface StoreParams {
   category?: string;
   scope?: string;
   importance?: number;
+  /** Provenance — tracks where and why this memory was created (Gemini-inspired) */
+  provenance?: MemoryProvenance;
 }
 
 export interface StoreResult {
@@ -63,6 +68,8 @@ export interface RecallParams {
   depth?: "l0" | "l1" | "l2" | "full";
   /** Recall source: "manual" (user-triggered) or "auto" (system auto-recall). Only manual recalls reinforce access count. Default: "manual" */
   source?: "manual" | "auto";
+  /** Enable debug scoring trace. When true, each result includes a full scoringTrace breakdown. Default: false. */
+  debug?: boolean;
 }
 
 export interface ScoringTrace {
@@ -183,6 +190,43 @@ export interface StatsResult {
 }
 
 // ---------------------------------------------------------------------------
+// Provenance query types (Gemini-inspired)
+// ---------------------------------------------------------------------------
+
+export interface ProvenanceResult {
+  id: string;
+  text: string;
+  source: string;
+  source_session?: string;
+  provenance: MemoryProvenance | null;
+  created_at: number;
+  tier: string;
+  confidence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation types (Gemini-inspired)
+// ---------------------------------------------------------------------------
+
+export interface ConsolidateParams {
+  /** Scope to consolidate (default: "global") */
+  scope?: string;
+  /** Max memories to scan (default: 100, max: 500) */
+  maxEntries?: number;
+  /** Cosine similarity threshold for merging (default: 0.85) */
+  similarityThreshold?: number;
+  /** Whether to generate a digest entry (default: true) */
+  generateDigest?: boolean;
+}
+
+export interface ConsolidateResult {
+  originalCount: number;
+  mergedCount: number;
+  digestId: string | null;
+  scope: string;
+}
+
+// ---------------------------------------------------------------------------
 // MemoryService
 // ---------------------------------------------------------------------------
 
@@ -194,6 +238,7 @@ export class MemoryService {
   private scopeManager!: MemoryScopeManager;
   private decayEngine!: DecayEngine;
   private tierManager!: TierManager;
+  private feedbackLearner?: FeedbackLearner;
   private initialized = false;
 
   constructor(config: Partial<UltraMemoryConfig> & { embedding: UltraMemoryConfig["embedding"] }) {
@@ -243,6 +288,8 @@ export class MemoryService {
       ...(this.config.tier || {}),
     });
 
+    this.feedbackLearner = new FeedbackLearner(this._store, this.config.decay?.feedbackAlpha ?? 0.15);
+
     this.retriever = createRetriever(
       this._store,
       this.embedder,
@@ -273,6 +320,7 @@ export class MemoryService {
     this.scopeManager = null!;
     this.decayEngine = null!;
     this.tierManager = null!;
+    this.feedbackLearner = undefined;
     this.initialized = false;
 
     process.stderr.write("[MemoryService] shutdown complete\n");
@@ -319,20 +367,32 @@ export class MemoryService {
       // fail-open
     }
 
-    // Build metadata
+    // Build metadata with optional provenance
+    const meta = parseSmartMetadata("{}", { text, category, importance } as any);
+    const l0 = (meta as any).l0_abstract || text;
+    const l1 = (meta as any).l1_overview || `- ${text}`;
+    const l2 = (meta as any).l2_content || text;
+
+    const metadataPatch: Record<string, unknown> = {
+      l0_abstract: l0,
+      l1_overview: l1,
+      l2_content: l2,
+      source: "manual",
+      state: "confirmed",
+      last_confirmed_use_at: Date.now(),
+    };
+    if (params.provenance) {
+      metadataPatch.provenance = {
+        ...params.provenance,
+        date: params.provenance.date || new Date().toISOString().slice(0, 10),
+      };
+    }
     const metadata = stringifySmartMetadata(
-      buildSmartMetadata(
-        { text, category, importance },
-        {
-          l0_abstract: text,
-          l1_overview: `- ${text}`,
-          l2_content: text,
-          source: "manual",
-          state: "confirmed",
-          last_confirmed_use_at: Date.now(),
-        },
-      ),
+      buildSmartMetadata({ text, category, importance }, metadataPatch as any),
     );
+
+    // Embed multi-layer vectors (reuses main vector when layer text === text)
+    const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(text, vector, l0, l1, l2);
 
     const entry = await this._store.store({
       text,
@@ -341,6 +401,9 @@ export class MemoryService {
       scope,
       importance,
       metadata,
+      vector_l0: vectorL0,
+      vector_l1: vectorL1,
+      vector_l2: vectorL2,
     });
 
     return {
@@ -364,6 +427,7 @@ export class MemoryService {
       limit,
       scopeFilter,
       category,
+      debug: params.debug,
     });
 
     // Update access metadata only for manual recalls (not auto-recall)
@@ -376,6 +440,25 @@ export class MemoryService {
           { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
           scopeFilter,
         ).catch(() => {});
+      }
+    }
+
+    // Lifecycle evaluation (all sources, not just auto)
+    if (this.decayEngine && this.tierManager) {
+      for (const r of results) {
+        const decayable = getDecayableFromEntry(r.entry);
+        const decayScore = this.decayEngine.score(decayable.memory);
+        const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+        if (transition) {
+          this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
+        }
+      }
+    }
+
+    // Positive feedback for manual recalls
+    if (params.source !== "auto" && this.feedbackLearner) {
+      for (const r of results) {
+        this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
       }
     }
 
@@ -401,16 +484,20 @@ export class MemoryService {
 
       // Build scoring trace from retrieval result metadata (if available)
       const sources = (r as any).sources || {};
-      const scoringTrace: ScoringTrace = {
-        vectorRank: sources.vector?.rank,
-        vectorScore: sources.vector?.score,
-        bm25Rank: sources.bm25?.rank,
-        bm25Score: sources.bm25?.score,
-        rrfFused: sources.fused?.score,
-        rerankScore: sources.rerank?.score,
-        finalScore: r.score,
-        queryType: (r as any).queryType,
-      };
+      // Use the richer per-stage trace when debug=true, otherwise build a
+      // lightweight trace from the sources metadata (always available).
+      const scoringTrace: ScoringTrace = (params.debug && (r as any).scoringTrace)
+        ? (r as any).scoringTrace
+        : {
+            vectorRank: sources.vector?.rank,
+            vectorScore: sources.vector?.score,
+            bm25Rank: sources.bm25?.rank,
+            bm25Score: sources.bm25?.score,
+            rrfFused: sources.fused?.score,
+            rerankScore: sources.reranked?.score,
+            finalScore: r.score,
+            queryType: (r as any).queryType,
+          };
 
       return {
         id: r.entry.id,
@@ -433,7 +520,8 @@ export class MemoryService {
 
     if (params.text !== undefined) {
       updates.text = params.text;
-      updates.vector = await this.embedder.embedPassage(params.text);
+      const newVector = await this.embedder.embedPassage(params.text);
+      updates.vector = newVector;
 
       // Regenerate L0/L1/L2 metadata to match new text so recall with
       // depth=l0/l1/l2 returns up-to-date summaries.
@@ -446,11 +534,14 @@ export class MemoryService {
       } catch {
         // fail-open: rebuild metadata from scratch if lookup fails
       }
+      const l0 = params.text.slice(0, 200);
+      const l1 = `- ${params.text.slice(0, 1000)}`;
+      const l2 = params.text;
       const updatedMeta = {
         ...existingMeta,
-        l0_abstract: params.text.slice(0, 200),
-        l1_overview: `- ${params.text.slice(0, 1000)}`,
-        l2_content: params.text,
+        l0_abstract: l0,
+        l1_overview: l1,
+        l2_content: l2,
       };
       updates.metadata = stringifySmartMetadata(
         buildSmartMetadata(
@@ -458,6 +549,14 @@ export class MemoryService {
           updatedMeta as any,
         ),
       );
+
+      // Re-embed L0/L1/L2 vectors to keep multi-channel search in sync
+      const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(
+        params.text, newVector, l0, l1, l2,
+      );
+      updates.vector_l0 = vectorL0;
+      updates.vector_l1 = vectorL1;
+      updates.vector_l2 = vectorL2;
 
       fieldsUpdated.push("text");
     }
@@ -480,6 +579,19 @@ export class MemoryService {
 
   async forget(params: ForgetParams): Promise<ForgetResult> {
     this.ensureInitialized();
+
+    // Negative feedback propagation to related memories
+    if (this.feedbackLearner) {
+      const entry = await this._store.getById(params.id);
+      if (entry) {
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        for (const rel of meta.relations ?? []) {
+          this.feedbackLearner.recordNegative(rel.targetId).catch(() => {});
+        }
+        this.feedbackLearner.setDirect(params.id, 0.1).catch(() => {});
+      }
+    }
+
     const ok = await this._store.delete(params.id);
     return { ok };
   }
@@ -511,6 +623,239 @@ export class MemoryService {
   async stats(scopeFilter?: string[]): Promise<StatsResult> {
     this.ensureInitialized();
     return this._store.stats(scopeFilter);
+  }
+
+  async feedback(params: { id: string; helpful: boolean }): Promise<{ ok: boolean; id: string }> {
+    this.ensureInitialized();
+    if (!this.feedbackLearner) {
+      return { ok: false, id: params.id };
+    }
+    await this.feedbackLearner.recordExplicit(params.id, params.helpful);
+    return { ok: true, id: params.id };
+  }
+
+  /**
+   * Backfill multi-vector columns (vector_l0/l1/l2) for all memories that
+   * still have zero vectors in those columns. Reads L0/L1/L2 texts from
+   * smart metadata and embeds each layer, reusing the main vector when the
+   * layer text is identical to the stored text.
+   *
+   * @param log  Progress logger (defaults to console.error)
+   * @returns    Number of memories updated
+   */
+  async backfillVectors(
+    log: (msg: string) => void = console.error,
+  ): Promise<number> {
+    this.ensureInitialized();
+
+    // list() returns entries without vectors for performance; we use it only
+    // for IDs/text/metadata, then fetch the full entry (with vector) via getById.
+    const entries = await this._store.list(undefined, undefined, 10000, 0);
+    const total = entries.length;
+    log(`backfill-vectors: scanning ${total} memories...`);
+
+    let done = 0;
+    let errors = 0;
+
+    for (const entry of entries) {
+      try {
+        // Fetch the full entry including the stored main vector
+        const full = await this._store.getById(entry.id);
+        if (!full) continue;
+
+        // If the main vector is already populated, we can use the reuse
+        // optimisation in embedMultiLayer; otherwise embed the text fresh.
+        const mainVector = full.vector.length > 0
+          ? full.vector
+          : await this.embedder.embedPassage(full.text);
+
+        const meta = parseSmartMetadata(full.metadata, full);
+        const l0 = meta.l0_abstract || full.text.slice(0, 200);
+        const l1 = meta.l1_overview || `- ${full.text.slice(0, 1000)}`;
+        const l2 = meta.l2_content || full.text;
+
+        const [vector_l0, vector_l1, vector_l2] = await this.embedMultiLayer(
+          full.text,
+          mainVector,
+          l0,
+          l1,
+          l2,
+        );
+
+        await this._store.update(full.id, { vector_l0, vector_l1, vector_l2 });
+        done++;
+        if (done % 50 === 0) {
+          log(`backfill-vectors: backfilled ${done}/${total} memories`);
+        }
+      } catch (err) {
+        errors++;
+        log(`backfill-vectors: ERROR on ${entry.id} — ${String(err)}`);
+      }
+    }
+
+    log(`backfill-vectors: complete — ${done} updated, ${errors} errors`);
+    return done;
+  }
+
+  // -----------------------------------------------------------------------
+  // Provenance query (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  async getProvenance(id: string): Promise<ProvenanceResult | null> {
+    this.ensureInitialized();
+
+    const entry = await this._store.getById(id);
+    if (!entry) return null;
+
+    const meta = parseSmartMetadata(entry.metadata, entry);
+    return {
+      id: entry.id,
+      text: entry.text.slice(0, 200),
+      source: meta.source,
+      source_session: meta.source_session,
+      provenance: meta.provenance || null,
+      created_at: entry.timestamp,
+      tier: meta.tier,
+      confidence: meta.confidence,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Memory consolidation (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  async consolidate(params: ConsolidateParams): Promise<ConsolidateResult> {
+    this.ensureInitialized();
+
+    const scope = params.scope || "global";
+    const maxEntries = clampInt(params.maxEntries ?? 100, 10, 500);
+    const similarityThreshold = params.similarityThreshold ?? 0.85;
+
+    // Fetch all memories in scope
+    const entries = await this._store.list([scope], undefined, maxEntries, 0);
+    if (entries.length === 0) {
+      return { mergedCount: 0, digestId: null, scope, originalCount: 0 };
+    }
+
+    // Group by category for smarter merging
+    const byCategory = new Map<string, typeof entries>();
+    for (const e of entries) {
+      const meta = parseSmartMetadata(e.metadata, e);
+      const cat = meta.memory_category || e.category;
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat)!.push(e);
+    }
+
+    // Find near-duplicates within each category and merge
+    let mergedCount = 0;
+    const mergedIds: string[] = [];
+
+    for (const [_cat, catEntries] of byCategory) {
+      if (catEntries.length < 2) continue;
+
+      // Embed all entries for pairwise comparison
+      const vectors = await Promise.all(
+        catEntries.map((e) =>
+          e.vector?.length ? Promise.resolve(e.vector) : this.embedder.embedPassage(e.text),
+        ),
+      );
+
+      const merged = new Set<number>();
+      for (let i = 0; i < catEntries.length; i++) {
+        if (merged.has(i)) continue;
+        for (let j = i + 1; j < catEntries.length; j++) {
+          if (merged.has(j)) continue;
+          const sim = cosineSimilarity(vectors[i], vectors[j]);
+          if (sim >= similarityThreshold) {
+            // Merge j into i: keep the higher-importance one, archive the other
+            const keep = catEntries[i].importance >= catEntries[j].importance ? i : j;
+            const drop = keep === i ? j : i;
+
+            // Mark dropped entry as archived with provenance
+            const dropMeta = parseSmartMetadata(catEntries[drop].metadata, catEntries[drop]);
+            await this._store.patchMetadata(catEntries[drop].id, {
+              state: "archived",
+              superseded_by: catEntries[keep].id,
+              provenance: {
+                ...(dropMeta.provenance || {}),
+                trigger: `consolidated: merged into ${catEntries[keep].id} (similarity=${sim.toFixed(3)})`,
+                date: new Date().toISOString().slice(0, 10),
+              },
+            }, [scope]).catch(() => {});
+
+            // Add relation on keeper
+            await this._store.patchMetadata(catEntries[keep].id, {
+              provenance: {
+                ...(parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance || {}),
+                derived_from: [
+                  ...((parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance?.derived_from) || []),
+                  catEntries[drop].id,
+                ],
+              },
+            }, [scope]).catch(() => {});
+
+            merged.add(drop);
+            mergedIds.push(catEntries[drop].id);
+            mergedCount++;
+          }
+        }
+      }
+    }
+
+    // Generate a digest — compressed user profile from remaining active memories
+    const activeEntries = entries.filter((e) => !mergedIds.includes(e.id));
+    let digestId: string | null = null;
+
+    if (activeEntries.length > 0 && params.generateDigest !== false) {
+      const bullets = activeEntries
+        .sort((a, b) => b.importance - a.importance)
+        .slice(0, 30)
+        .map((e) => {
+          const meta = parseSmartMetadata(e.metadata, e);
+          return `[${meta.memory_category}] ${e.text.slice(0, 150)}`;
+        });
+
+      const digestText = `[DIGEST] User profile consolidated from ${activeEntries.length} memories (${scope}):\n${bullets.join("\n")}`;
+      const digestVector = await this.embedder.embedPassage(digestText);
+
+      const digestMetadata = stringifySmartMetadata(
+        buildSmartMetadata(
+          { text: digestText, category: "other", importance: 0.85 },
+          {
+            l0_abstract: `[DIGEST] ${scope}: ${activeEntries.length} memories consolidated`,
+            l1_overview: bullets.slice(0, 10).map((b) => `- ${b}`).join("\n"),
+            l2_content: digestText,
+            source: "consolidation",
+            state: "confirmed",
+            tier: "core",
+            memory_category: "profile",
+            provenance: {
+              trigger: `consolidation: ${entries.length} memories → ${activeEntries.length} active + ${mergedCount} merged`,
+              date: new Date().toISOString().slice(0, 10),
+              derived_from: activeEntries.slice(0, 20).map((e) => e.id),
+            },
+          },
+        ),
+      );
+
+      const digestEntry = await this._store.store({
+        text: digestText,
+        vector: digestVector,
+        category: "other" as MemoryEntry["category"],
+        scope,
+        importance: 0.85,
+        metadata: digestMetadata,
+      });
+
+      digestId = digestEntry.id;
+    }
+
+    return {
+      originalCount: entries.length,
+      mergedCount,
+      digestId,
+      scope,
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -617,6 +962,38 @@ export class MemoryService {
   // Internal
   // -----------------------------------------------------------------------
 
+  /**
+   * Embed L0/L1/L2 layer texts, reusing the main text vector when a layer
+   * text is identical to the original text (avoids redundant API calls).
+   */
+  private async embedMultiLayer(
+    text: string,
+    textVector: number[],
+    l0: string,
+    l1: string,
+    l2: string,
+  ): Promise<[number[], number[], number[]]> {
+    const needsEmbed: string[] = [];
+    const mapping: Array<number | "reuse"> = [];
+
+    for (const layerText of [l0, l1, l2]) {
+      if (layerText === text) {
+        mapping.push("reuse");
+      } else {
+        mapping.push(needsEmbed.length);
+        needsEmbed.push(layerText);
+      }
+    }
+
+    const embedded = needsEmbed.length > 0
+      ? await this.embedder.embedBatchPassage(needsEmbed)
+      : [];
+
+    return mapping.map((m) =>
+      m === "reuse" ? textVector : embedded[m as number],
+    ) as [number[], number[], number[]];
+  }
+
   private ensureInitialized(): void {
     if (!this.initialized) {
       throw new Error("MemoryService not initialized. Call initialize() first.");
@@ -641,4 +1018,16 @@ function clampInt(value: number, min: number, max: number): number {
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
 }

@@ -4,11 +4,18 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
-export function createMcpToolDefinitions(): McpToolDefinition[] {
-  return [
+export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }): McpToolDefinition[] {
+  const tools: McpToolDefinition[] = [
     {
       name: "memory_store",
-      description: "Store a new memory",
+      description:
+        "Store a new memory. " +
+        "PROACTIVE STORE GUIDANCE — call this tool during the conversation, not just at the end: " +
+        "(1) Reusable pattern discovered — store solutions, workarounds, or design patterns immediately (importance: 0.8+). " +
+        "(2) Non-obvious preference confirmed — store when the user explicitly confirms an uncommon preference (importance: 0.8). " +
+        "(3) Corrected misconception — store corrections to previous wrong assumptions so they are never repeated (importance: 0.85). " +
+        "(4) Complex problem solved — store root cause and fix after multi-step debugging or tricky integration (importance: 0.8). " +
+        "Do NOT store greetings, small talk, transient task status, or duplicates (auto-deduplicated).",
       inputSchema: {
         type: "object",
         properties: {
@@ -215,6 +222,22 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
       },
     },
     {
+      name: "memory_provenance",
+      description:
+        "Query the provenance (origin story) of a memory — shows where it came from, which session created it, and why",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Memory ID to query provenance for",
+          },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+    {
       name: "memory_resume",
       description:
         "Resume a previous session — retrieves the latest checkpoint to restore context and continue where you left off",
@@ -234,5 +257,61 @@ export function createMcpToolDefinitions(): McpToolDefinition[] {
         additionalProperties: false,
       },
     },
+    {
+      name: "memory_consolidate",
+      description:
+        "Consolidate memories — merge near-duplicates and generate a compressed user profile digest. Run periodically (e.g. weekly) to keep memory clean and efficient.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            description: "Scope to consolidate (default: global)",
+          },
+          maxEntries: {
+            type: "number",
+            description: "Max memories to scan (default: 100, max: 500)",
+            minimum: 10,
+            maximum: 500,
+          },
+          similarityThreshold: {
+            type: "number",
+            description: "Cosine similarity threshold for merging (default: 0.85, range: 0.7-0.99)",
+            minimum: 0.7,
+            maximum: 0.99,
+          },
+          generateDigest: {
+            type: "boolean",
+            description: "Whether to generate a compressed digest entry (default: true)",
+          },
+        },
+        additionalProperties: false,
+      },
+    },
   ];
+
+  if (opts?.enableFeedbackTool) {
+    tools.push({
+      name: "memory_feedback",
+      description:
+        "Record feedback on a recalled memory. Positive feedback makes the memory more prominent in future recalls; negative feedback makes it fade faster.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "Memory ID to provide feedback on",
+          },
+          helpful: {
+            type: "boolean",
+            description: "Was this memory helpful? true = positive, false = negative",
+          },
+        },
+        required: ["id", "helpful"],
+        additionalProperties: false,
+      },
+    });
+  }
+
+  return tools;
 }

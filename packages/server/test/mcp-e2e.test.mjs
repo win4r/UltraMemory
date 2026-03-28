@@ -10,12 +10,14 @@ if (typeof globalThis.require === "undefined") {
 const { createMcpToolDefinitions } = await import("../src/tools.ts");
 
 describe("MCP tool definitions", () => {
-  it("defines 6 tools with valid schemas", () => {
+  it("defines 8 tools with valid schemas", () => {
     const tools = createMcpToolDefinitions();
     const names = tools.map(t => t.name).sort();
     assert.deepEqual(names, [
+      "memory_consolidate",
       "memory_forget",
       "memory_list",
+      "memory_provenance",
       "memory_recall",
       "memory_stats",
       "memory_store",
