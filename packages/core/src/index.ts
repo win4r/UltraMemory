@@ -127,6 +127,9 @@ export { IngestionPipeline, type IngestionInput, type IngestionResult, type Inge
 // Conflict detection
 export { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-detector.js";
 
+// Consolidation engine
+export { ConsolidationEngine, DEFAULT_CONSOLIDATION_CONFIG, type ConsolidationConfig, type ConsolidationResult, type ConflictEvent } from "./consolidation-engine.js";
+
 // Evaluation
 export { computeCorpusHealth, type CorpusHealth } from "./eval/corpus-health.js";
 export { scoreBenchmarkResult, computeSuiteMetrics, type BenchmarkQuery, type QueryScore, type SuiteMetrics } from "./eval/benchmark.js";
