@@ -10,7 +10,6 @@ import {
   deriveFactKey,
   buildSmartMetadata,
   stringifySmartMetadata,
-  parseSmartMetadata,
   appendRelation,
   type MemorySource,
   type MemoryState,
@@ -261,16 +260,10 @@ export class IngestionPipeline {
     // -----------------------------------------------------------------------
     if (conflictWith) {
       try {
-        const oldEntry = await this.store.getById(conflictWith);
-        if (oldEntry) {
-          const oldMeta = parseSmartMetadata(oldEntry.metadata, oldEntry);
-          const patchedMeta = stringifySmartMetadata({
-            ...oldMeta,
-            invalidated_at: now,
-            superseded_by: newId,
-          });
-          await this.store.patchMetadata(conflictWith, patchedMeta);
-        }
+        await this.store.patchMetadata(conflictWith, {
+          invalidated_at: now,
+          superseded_by: newId,
+        });
       } catch {
         // Best-effort; don't fail the ingest if supersede patch fails
       }
@@ -285,34 +278,54 @@ export class IngestionPipeline {
     );
     const relTargets = relCandidates.slice(0, 3);
 
-    for (const target of relTargets) {
+    // Collect all forward relations, then patch once
+    if (relTargets.length > 0) {
+      // Read current entry metadata to get existing relations
+      let currentRelations: unknown = [];
       try {
-        const targetId = target.entry.id as string;
+        const currentEntry = await this.store.getById(newId);
+        if (currentEntry) {
+          const currentMeta = safeParseMetadata(currentEntry.metadata);
+          currentRelations = currentMeta?.relations ?? [];
+        }
+      } catch {
+        // fallback: start from empty
+      }
 
-        // Add relation on new entry's metadata
-        const newMeta = safeParseMetadata(metadataStr) ?? {};
-        const updatedRelations = appendRelation(
-          newMeta.relations,
+      // Accumulate all forward relations
+      let accumulatedRelations = currentRelations;
+      for (const target of relTargets) {
+        const targetId = target.entry.id as string;
+        accumulatedRelations = appendRelation(
+          accumulatedRelations,
           { type: "related_to", targetId },
         );
-        newMeta.relations = updatedRelations;
-        await this.store.patchMetadata(newId, JSON.stringify(newMeta));
+      }
 
-        // Add reverse relation on target's metadata
-        const targetEntry = await this.store.getById(targetId);
-        if (targetEntry) {
-          const targetMeta = safeParseMetadata(targetEntry.metadata) ?? {};
-          const reverseRelations = appendRelation(
-            targetMeta.relations,
-            { type: "related_to", targetId: newId },
-          );
-          targetMeta.relations = reverseRelations;
-          await this.store.patchMetadata(targetId, JSON.stringify(targetMeta));
-        }
-
-        relationsAdded++;
+      // Patch the new entry once with all accumulated relations
+      try {
+        await this.store.patchMetadata(newId, { relations: accumulatedRelations });
       } catch {
-        // Best-effort relation linking
+        // Best-effort
+      }
+
+      // Add reverse relations on each target (one patch per target)
+      for (const target of relTargets) {
+        try {
+          const targetId = target.entry.id as string;
+          const targetEntry = await this.store.getById(targetId);
+          if (targetEntry) {
+            const targetMeta = safeParseMetadata(targetEntry.metadata);
+            const reverseRelations = appendRelation(
+              targetMeta?.relations ?? [],
+              { type: "related_to", targetId: newId },
+            );
+            await this.store.patchMetadata(targetId, { relations: reverseRelations });
+          }
+          relationsAdded++;
+        } catch {
+          // Best-effort relation linking
+        }
       }
     }
 

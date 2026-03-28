@@ -129,9 +129,13 @@ export function computeCorpusHealth(entries: EntryLike[]): CorpusHealth {
     }
 
     // --- Conflict detection (all entries) ---
-    const raw = entry.metadata ? safeParseJson(entry.metadata) : null;
-    if (raw && typeof raw === "object" && (raw as Record<string, unknown>).conflict_with) {
+    // Count conflicts from supersede fields AND contradiction relations
+    if (meta.superseded_by || meta.supersedes) {
       conflictCount++;
+    } else if (meta.relations) {
+      for (const rel of meta.relations as any[]) {
+        if (rel.type === "contradicts") { conflictCount++; break; }
+      }
     }
 
     // --- Auto-capture and duplicate tracking (all entries) ---

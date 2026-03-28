@@ -96,7 +96,7 @@ export interface DecayEngine {
   scoreAll(memories: DecayableMemory[], now?: number): DecayScore[];
   /** Apply decay boost to search results (multiplies each score by boost) */
   applySearchBoost(
-    results: Array<{ memory: DecayableMemory; score: number }>,
+    results: Array<{ memory: DecayableMemory; score: number; category?: string }>,
     now?: number,
   ): void;
   /** Find stale memories (composite below threshold) */
@@ -222,6 +222,10 @@ export function createDecayEngine(
       }
     }
 
+    // Apply tier floor to prevent floor-protected memories from appearing stale
+    const tierFloor = getTierFloor(memory.tier);
+    composite = Math.max(composite, tierFloor);
+
     return {
       memoryId: memory.id,
       recency: r,
@@ -242,9 +246,9 @@ export function createDecayEngine(
 
     applySearchBoost(results, now = Date.now()) {
       for (const r of results) {
-        const ds = scoreOne(r.memory, now);
-        const tierFloor = Math.max(getTierFloor(r.memory.tier), ds.composite);
-        const multiplier = boostMin + ((1 - boostMin) * tierFloor);
+        const ds = scoreOne(r.memory, now, r.category);
+        // scoreOne already applies tier floor, so ds.composite >= tierFloor
+        const multiplier = boostMin + ((1 - boostMin) * ds.composite);
         r.score *= Math.min(1, Math.max(boostMin, multiplier));
       }
     },
