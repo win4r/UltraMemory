@@ -33,6 +33,7 @@ export type MemorySource =
   | "auto-capture"
   | "reflection"
   | "session-summary"
+  | "consolidation"
   | "legacy";
 
 export interface SmartMemoryMetadata {
@@ -61,6 +62,7 @@ export interface SmartMemoryMetadata {
   suppressed_until_turn: number;
   canonical_id?: string;
   feedback_weight: number;  // 0.0-1.0, default 0.5
+  trust_level: "source" | "generated";
   [key: string]: unknown;
 }
 
@@ -114,6 +116,7 @@ function normalizeSource(value: unknown): MemorySource {
     case "auto-capture":
     case "reflection":
     case "session-summary":
+    case "consolidation":
     case "legacy":
       return value;
     default:
@@ -131,6 +134,10 @@ function normalizeLayer(value: unknown): MemoryLayer {
     default:
       return "working";
   }
+}
+
+function normalizeTrustLevel(value: unknown): "source" | "generated" {
+  return value === "generated" ? "generated" : "source";
 }
 
 function deriveDefaultLayer(
@@ -315,6 +322,7 @@ export function parseSmartMetadata(
     feedback_weight: typeof parsed.feedback_weight === 'number'
       ? Math.max(0, Math.min(1, parsed.feedback_weight))
       : 0.5,
+    trust_level: normalizeTrustLevel(parsed.trust_level),
   };
 
   return normalized;
@@ -400,6 +408,9 @@ export function buildSmartMetadata(
     feedback_weight: typeof patch.feedback_weight === 'number'
       ? Math.max(0, Math.min(1, patch.feedback_weight))
       : base.feedback_weight,
+    trust_level: patch.trust_level !== undefined
+      ? normalizeTrustLevel(patch.trust_level)
+      : base.trust_level,
   };
 }
 
