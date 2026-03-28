@@ -500,6 +500,34 @@ export class MemoryService {
     return this._store.stats(scopeFilter);
   }
 
+  async health(scopeFilter?: string[]): Promise<import("@ultramemory/core").CorpusHealth> {
+    this.ensureInitialized();
+    const entries = await this._store.list(scopeFilter, undefined, 10000, 0);
+    const { computeCorpusHealth } = await import("@ultramemory/core");
+    return computeCorpusHealth(entries as any);
+  }
+
+  async conflicts(scopeFilter?: string[]): Promise<Array<{ id: string; text: string; conflictWith: string[] }>> {
+    this.ensureInitialized();
+    const entries = await this._store.list(scopeFilter, undefined, 10000, 0);
+    const conflicts: Array<{ id: string; text: string; conflictWith: string[] }> = [];
+
+    for (const entry of entries) {
+      const meta = parseSmartMetadata(entry.metadata, entry);
+      const conflictIds: string[] = [];
+      if (meta.relations) {
+        for (const rel of meta.relations as any[]) {
+          if (rel.type === "contradicts") conflictIds.push(rel.targetId);
+        }
+      }
+      if (conflictIds.length > 0) {
+        conflicts.push({ id: entry.id, text: entry.text.slice(0, 200), conflictWith: conflictIds });
+      }
+    }
+
+    return conflicts;
+  }
+
   async feedback(params: { id: string; helpful: boolean }): Promise<{ ok: boolean; id: string }> {
     this.ensureInitialized();
     if (!this.feedbackLearner) {
