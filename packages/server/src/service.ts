@@ -31,6 +31,7 @@ import {
   stringifySmartMetadata,
   toLifecycleMemory,
   isNoise,
+  type MemoryProvenance,
   getDecayableFromEntry,
 } from "@ultramemory/core";
 import { FeedbackLearner } from "@ultramemory/core";
@@ -45,6 +46,8 @@ export interface StoreParams {
   category?: string;
   scope?: string;
   importance?: number;
+  /** Provenance — tracks where and why this memory was created (Gemini-inspired) */
+  provenance?: MemoryProvenance;
 }
 
 export interface StoreResult {
@@ -137,6 +140,43 @@ export interface StatsResult {
   totalCount: number;
   scopeCounts: Record<string, number>;
   categoryCounts: Record<string, number>;
+}
+
+// ---------------------------------------------------------------------------
+// Provenance query types (Gemini-inspired)
+// ---------------------------------------------------------------------------
+
+export interface ProvenanceResult {
+  id: string;
+  text: string;
+  source: string;
+  source_session?: string;
+  provenance: MemoryProvenance | null;
+  created_at: number;
+  tier: string;
+  confidence: number;
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation types (Gemini-inspired)
+// ---------------------------------------------------------------------------
+
+export interface ConsolidateParams {
+  /** Scope to consolidate (default: "global") */
+  scope?: string;
+  /** Max memories to scan (default: 100, max: 500) */
+  maxEntries?: number;
+  /** Cosine similarity threshold for merging (default: 0.85) */
+  similarityThreshold?: number;
+  /** Whether to generate a digest entry (default: true) */
+  generateDigest?: boolean;
+}
+
+export interface ConsolidateResult {
+  originalCount: number;
+  mergedCount: number;
+  digestId: string | null;
+  scope: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,24 +320,28 @@ export class MemoryService {
       // fail-open
     }
 
-    // Build metadata
+    // Build metadata with optional provenance
     const meta = parseSmartMetadata("{}", { text, category, importance } as any);
     const l0 = (meta as any).l0_abstract || text;
     const l1 = (meta as any).l1_overview || `- ${text}`;
     const l2 = (meta as any).l2_content || text;
 
+    const metadataPatch: Record<string, unknown> = {
+      l0_abstract: l0,
+      l1_overview: l1,
+      l2_content: l2,
+      source: "manual",
+      state: "confirmed",
+      last_confirmed_use_at: Date.now(),
+    };
+    if (params.provenance) {
+      metadataPatch.provenance = {
+        ...params.provenance,
+        date: params.provenance.date || new Date().toISOString().slice(0, 10),
+      };
+    }
     const metadata = stringifySmartMetadata(
-      buildSmartMetadata(
-        { text, category, importance },
-        {
-          l0_abstract: l0,
-          l1_overview: l1,
-          l2_content: l2,
-          source: "manual",
-          state: "confirmed",
-          last_confirmed_use_at: Date.now(),
-        },
-      ),
+      buildSmartMetadata({ text, category, importance }, metadataPatch as any),
     );
 
     // Embed multi-layer vectors (reuses main vector when layer text === text)
@@ -607,6 +651,167 @@ export class MemoryService {
   }
 
   // -----------------------------------------------------------------------
+  // Provenance query (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  async getProvenance(id: string): Promise<ProvenanceResult | null> {
+    this.ensureInitialized();
+
+    const entry = await this._store.getById(id);
+    if (!entry) return null;
+
+    const meta = parseSmartMetadata(entry.metadata, entry);
+    return {
+      id: entry.id,
+      text: entry.text.slice(0, 200),
+      source: meta.source,
+      source_session: meta.source_session,
+      provenance: meta.provenance || null,
+      created_at: entry.timestamp,
+      tier: meta.tier,
+      confidence: meta.confidence,
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Memory consolidation (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  async consolidate(params: ConsolidateParams): Promise<ConsolidateResult> {
+    this.ensureInitialized();
+
+    const scope = params.scope || "global";
+    const maxEntries = clampInt(params.maxEntries ?? 100, 10, 500);
+    const similarityThreshold = params.similarityThreshold ?? 0.85;
+
+    // Fetch all memories in scope
+    const entries = await this._store.list([scope], undefined, maxEntries, 0);
+    if (entries.length === 0) {
+      return { mergedCount: 0, digestId: null, scope, originalCount: 0 };
+    }
+
+    // Group by category for smarter merging
+    const byCategory = new Map<string, typeof entries>();
+    for (const e of entries) {
+      const meta = parseSmartMetadata(e.metadata, e);
+      const cat = meta.memory_category || e.category;
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat)!.push(e);
+    }
+
+    // Find near-duplicates within each category and merge
+    let mergedCount = 0;
+    const mergedIds: string[] = [];
+
+    for (const [_cat, catEntries] of byCategory) {
+      if (catEntries.length < 2) continue;
+
+      // Embed all entries for pairwise comparison
+      const vectors = await Promise.all(
+        catEntries.map((e) =>
+          e.vector?.length ? Promise.resolve(e.vector) : this.embedder.embedPassage(e.text),
+        ),
+      );
+
+      const merged = new Set<number>();
+      for (let i = 0; i < catEntries.length; i++) {
+        if (merged.has(i)) continue;
+        for (let j = i + 1; j < catEntries.length; j++) {
+          if (merged.has(j)) continue;
+          const sim = cosineSimilarity(vectors[i], vectors[j]);
+          if (sim >= similarityThreshold) {
+            // Merge j into i: keep the higher-importance one, archive the other
+            const keep = catEntries[i].importance >= catEntries[j].importance ? i : j;
+            const drop = keep === i ? j : i;
+
+            // Mark dropped entry as archived with provenance
+            const dropMeta = parseSmartMetadata(catEntries[drop].metadata, catEntries[drop]);
+            await this._store.patchMetadata(catEntries[drop].id, {
+              state: "archived",
+              superseded_by: catEntries[keep].id,
+              provenance: {
+                ...(dropMeta.provenance || {}),
+                trigger: `consolidated: merged into ${catEntries[keep].id} (similarity=${sim.toFixed(3)})`,
+                date: new Date().toISOString().slice(0, 10),
+              },
+            }, [scope]).catch(() => {});
+
+            // Add relation on keeper
+            await this._store.patchMetadata(catEntries[keep].id, {
+              provenance: {
+                ...(parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance || {}),
+                derived_from: [
+                  ...((parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance?.derived_from) || []),
+                  catEntries[drop].id,
+                ],
+              },
+            }, [scope]).catch(() => {});
+
+            merged.add(drop);
+            mergedIds.push(catEntries[drop].id);
+            mergedCount++;
+          }
+        }
+      }
+    }
+
+    // Generate a digest — compressed user profile from remaining active memories
+    const activeEntries = entries.filter((e) => !mergedIds.includes(e.id));
+    let digestId: string | null = null;
+
+    if (activeEntries.length > 0 && params.generateDigest !== false) {
+      const bullets = activeEntries
+        .sort((a, b) => b.importance - a.importance)
+        .slice(0, 30)
+        .map((e) => {
+          const meta = parseSmartMetadata(e.metadata, e);
+          return `[${meta.memory_category}] ${e.text.slice(0, 150)}`;
+        });
+
+      const digestText = `[DIGEST] User profile consolidated from ${activeEntries.length} memories (${scope}):\n${bullets.join("\n")}`;
+      const digestVector = await this.embedder.embedPassage(digestText);
+
+      const digestMetadata = stringifySmartMetadata(
+        buildSmartMetadata(
+          { text: digestText, category: "other", importance: 0.85 },
+          {
+            l0_abstract: `[DIGEST] ${scope}: ${activeEntries.length} memories consolidated`,
+            l1_overview: bullets.slice(0, 10).map((b) => `- ${b}`).join("\n"),
+            l2_content: digestText,
+            source: "consolidation",
+            state: "confirmed",
+            tier: "core",
+            memory_category: "profile",
+            provenance: {
+              trigger: `consolidation: ${entries.length} memories → ${activeEntries.length} active + ${mergedCount} merged`,
+              date: new Date().toISOString().slice(0, 10),
+              derived_from: activeEntries.slice(0, 20).map((e) => e.id),
+            },
+          },
+        ),
+      );
+
+      const digestEntry = await this._store.store({
+        text: digestText,
+        vector: digestVector,
+        category: "other" as MemoryEntry["category"],
+        scope,
+        importance: 0.85,
+        metadata: digestMetadata,
+      });
+
+      digestId = digestEntry.id;
+    }
+
+    return {
+      originalCount: entries.length,
+      mergedCount,
+      digestId,
+      scope,
+    };
+  }
+
+  // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------
 
@@ -661,4 +866,16 @@ function clamp01(value: number): number {
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
 }

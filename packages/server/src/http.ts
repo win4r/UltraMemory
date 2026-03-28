@@ -388,6 +388,69 @@ export function createHttpApp(service: MemoryService): Hono {
   });
 
   // -----------------------------------------------------------------------
+  // GET /api/v1/memory/:id/provenance — provenance query (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  app.get("/api/v1/memory/:id/provenance", async (c) => {
+    try {
+      const id = c.req.param("id");
+      if (!id || id.trim() === "") {
+        return c.json(errorJson("VALIDATION_ERROR", "id is required"), 400);
+      }
+
+      const result = await service.getProvenance(id);
+      if (!result) {
+        return c.json(errorJson("NOT_FOUND", `memory ${id} not found`), 404);
+      }
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /api/v1/consolidate — memory consolidation (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  app.post("/api/v1/consolidate", async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+
+      if (body.similarityThreshold !== undefined) {
+        const t = body.similarityThreshold;
+        if (typeof t !== "number" || !Number.isFinite(t) || t < 0.7 || t > 0.99) {
+          return c.json(
+            errorJson("VALIDATION_ERROR", "similarityThreshold must be a number between 0.7 and 0.99"),
+            400,
+          );
+        }
+      }
+
+      if (body.maxEntries !== undefined) {
+        const m = body.maxEntries;
+        if (typeof m !== "number" || !Number.isInteger(m) || m < 10 || m > 500) {
+          return c.json(
+            errorJson("VALIDATION_ERROR", "maxEntries must be an integer between 10 and 500"),
+            400,
+          );
+        }
+      }
+
+      const result = await service.consolidate({
+        scope: body.scope,
+        maxEntries: body.maxEntries,
+        similarityThreshold: body.similarityThreshold,
+        generateDigest: body.generateDigest,
+      });
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
   // GET /api/v1/stats — stats
   // -----------------------------------------------------------------------
 
