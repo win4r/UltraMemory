@@ -25,19 +25,21 @@ describe("decay engine with retention policies", () => {
   it("applies faster decay with high decayMultiplier", () => {
     const engine = createDecayEngine({
       recencyHalfLifeDays: 14,
+      // Set peripheral floor to 0 so tier floors don't mask the decay effect
+      peripheralDecayFloor: 0,
       retentionPolicies: {
         events: { minRetentionDays: 7, decayMultiplier: 2.0 },
       },
     });
 
     const withPolicy = engine.score({
-      id: "a", importance: 0.5, confidence: 0.7, tier: "working",
+      id: "a", importance: 0.5, confidence: 0.7, tier: "peripheral",
       accessCount: 1, createdAt: Date.now() - 30 * 86400000,
       lastAccessedAt: Date.now() - 30 * 86400000,
     }, Date.now(), "events");
 
     const withoutPolicy = engine.score({
-      id: "a", importance: 0.5, confidence: 0.7, tier: "working",
+      id: "a", importance: 0.5, confidence: 0.7, tier: "peripheral",
       accessCount: 1, createdAt: Date.now() - 30 * 86400000,
       lastAccessedAt: Date.now() - 30 * 86400000,
     }, Date.now());
