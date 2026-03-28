@@ -225,6 +225,21 @@ export class MemoryService {
       // Migration is best-effort — may fail on first run with empty DB
     });
 
+    // Category model unification: ensure all entries have memory_category
+    try {
+      const { batchMigrateCategories } = await import("@ultramemory/core");
+      const allEntries = await this._store.list(undefined, undefined, 10000, 0);
+      const categoryUpdates = batchMigrateCategories(allEntries as any);
+      for (const { id, updatedMetadata } of categoryUpdates) {
+        await this._store.update(id, { metadata: updatedMetadata }).catch(() => {});
+      }
+      if (categoryUpdates.length > 0) {
+        process.stderr.write(`[MemoryService] migrated ${categoryUpdates.length} entries to unified categories\n`);
+      }
+    } catch {
+      // Category migration is best-effort
+    }
+
     this.initialized = true;
   }
 

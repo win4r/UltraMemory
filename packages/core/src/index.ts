@@ -36,6 +36,9 @@ export * from "./tier-manager.js";
 // Memory categories
 export * from "./memory-categories.js";
 
+// Category migration
+export { migrateCategoryForEntry, batchMigrateCategories } from "./category-migrator.js";
+
 // Noise filtering
 export * from "./noise-filter.js";
 export * from "./noise-prototypes.js";
