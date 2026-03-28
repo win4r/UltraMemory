@@ -388,6 +388,130 @@ export function createHttpApp(service: MemoryService): Hono {
   });
 
   // -----------------------------------------------------------------------
+  // POST /api/v1/checkpoint — save session checkpoint
+  // -----------------------------------------------------------------------
+
+  app.post("/api/v1/checkpoint", async (c) => {
+    try {
+      const body = await c.req.json().catch(() => null);
+      if (!body || typeof body !== "object") {
+        return c.json(errorJson("VALIDATION_ERROR", "request body must be JSON"), 400);
+      }
+
+      if (typeof body.summary !== "string" || body.summary.trim() === "") {
+        return c.json(errorJson("VALIDATION_ERROR", "summary is required"), 400);
+      }
+      if (body.summary.length > MAX_TEXT_LENGTH) {
+        return c.json(
+          errorJson("VALIDATION_ERROR", `summary exceeds max length of ${MAX_TEXT_LENGTH} characters`),
+          400,
+        );
+      }
+
+      const result = await service.checkpoint({
+        summary: body.summary,
+        scope: body.scope,
+        sessionId: body.sessionId,
+        decisions: body.decisions,
+        nextActions: body.nextActions,
+        openLoops: body.openLoops,
+        entities: body.entities,
+      });
+
+      return c.json(result, 201);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/v1/checkpoint/latest — resume latest checkpoint
+  // -----------------------------------------------------------------------
+
+  app.get("/api/v1/checkpoint/latest", async (c) => {
+    try {
+      const scope = c.req.query("scope");
+      const sessionId = c.req.query("sessionId");
+
+      const result = await service.resume({
+        scope: scope || undefined,
+        sessionId: sessionId || undefined,
+      });
+
+      if (!result) {
+        return c.json(errorJson("NOT_FOUND", "no checkpoint found"), 404);
+      }
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // GET /api/v1/memory/:id/provenance — provenance query (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  app.get("/api/v1/memory/:id/provenance", async (c) => {
+    try {
+      const id = c.req.param("id");
+      if (!id || id.trim() === "") {
+        return c.json(errorJson("VALIDATION_ERROR", "id is required"), 400);
+      }
+
+      const result = await service.getProvenance(id);
+      if (!result) {
+        return c.json(errorJson("NOT_FOUND", `memory ${id} not found`), 404);
+      }
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /api/v1/consolidate — memory consolidation (Gemini-inspired)
+  // -----------------------------------------------------------------------
+
+  app.post("/api/v1/consolidate", async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+
+      if (body.similarityThreshold !== undefined) {
+        const t = body.similarityThreshold;
+        if (typeof t !== "number" || !Number.isFinite(t) || t < 0.7 || t > 0.99) {
+          return c.json(
+            errorJson("VALIDATION_ERROR", "similarityThreshold must be a number between 0.7 and 0.99"),
+            400,
+          );
+        }
+      }
+
+      if (body.maxEntries !== undefined) {
+        const m = body.maxEntries;
+        if (typeof m !== "number" || !Number.isInteger(m) || m < 10 || m > 500) {
+          return c.json(
+            errorJson("VALIDATION_ERROR", "maxEntries must be an integer between 10 and 500"),
+            400,
+          );
+        }
+      }
+
+      const result = await service.consolidate({
+        scope: body.scope,
+        maxEntries: body.maxEntries,
+        similarityThreshold: body.similarityThreshold,
+        generateDigest: body.generateDigest,
+      });
+
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json(errorJson("INTERNAL_ERROR", "an unexpected error occurred"), 500);
+    }
+  });
+
+  // -----------------------------------------------------------------------
   // GET /api/v1/stats — stats
   // -----------------------------------------------------------------------
 

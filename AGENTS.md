@@ -36,6 +36,32 @@ pnpm typecheck  # runs server + openclaw only (core excluded due to pre-existing
 - All HTTP routes must validate input + return structured errors `{ "error": { "code", "message" } }`
 - Bearer token auth via `ULTRAMEMORY_API_KEY` env var
 
+## Agent Self-Store Guidance
+
+Agents using UltraMemory should **proactively** call `memory_store` during a conversation, not only at the end. The tool description includes inline guidance, but the principles are summarized here for system prompt authors and agent framework integrators.
+
+### When to store (during the conversation)
+
+| Trigger | Category | Importance | Example |
+|---------|----------|------------|---------|
+| Reusable pattern or solution discovered | `decision` or `fact` | 0.8+ | "LanceDB requires `--legacy-peer-deps` when installing on Node 22" |
+| User confirms a non-obvious preference | `preference` | 0.8 | "User prefers snake_case for all DB column names" |
+| Corrected misconception | `reflection` | 0.85 | "Corrected: scope isolation is per-agent, not per-session" |
+| Complex problem resolved | `fact` or `decision` | 0.8 | "Root cause: stale vector cache after compaction; fix: call `optimizeTable()` after delete" |
+
+### When NOT to store
+
+- Greetings, small talk, or filler
+- Transient task status ("currently running tests")
+- Information that is already in memory (auto-deduplicated at 0.98 cosine similarity)
+- Common-sense knowledge that any model already knows
+
+### Implementation notes
+
+- The guidance lives in the `memory_store` tool description (`src/tools.ts`, `packages/core/src/tools.ts`, `packages/server/src/tools.ts`). Most MCP/tool-use frameworks surface tool descriptions in the system prompt automatically, so agents see the guidance without extra configuration.
+- No code logic changes are required — this is purely a prompt-level intervention.
+- The noise filter (`isNoise()`) will reject obvious junk even if an agent stores too eagerly.
+
 ## Key Design Decisions
 
 - Storage: LanceDB only (embedded, zero-ops — core differentiator)

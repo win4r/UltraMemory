@@ -545,7 +545,8 @@ export class MemoryRetriever {
     );
 
     const weighted = this.decayEngine ? mapped : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
-    const lengthNormalized = this.applyLengthNormalization(weighted);
+    const sourceBoosted = this.applySourceBoost(weighted);
+    const lengthNormalized = this.applyLengthNormalization(sourceBoosted);
     const hardFiltered = lengthNormalized.filter(r => r.score >= c.hardMinScore);
     const lifecycleRanked = this.decayEngine
       ? this.applyDecayBoost(hardFiltered)
@@ -605,7 +606,8 @@ export class MemoryRetriever {
       ? mapped
       : this.applyImportanceWeight(this.applyRecencyBoost(mapped, c));
 
-    const lengthNormalized = this.applyLengthNormalization(temporallyRanked);
+    const sourceBoosted = this.applySourceBoost(temporallyRanked);
+    const lengthNormalized = this.applyLengthNormalization(sourceBoosted);
     const hardFiltered = lengthNormalized.filter(r => r.score >= c.hardMinScore);
 
     const lifecycleRanked = this.decayEngine
@@ -669,8 +671,11 @@ export class MemoryRetriever {
       ? reranked
       : this.applyImportanceWeight(this.applyRecencyBoost(reranked, c));
 
+    // Boost explicitly stored memories over auto-captured ones
+    const sourceBoosted = this.applySourceBoost(temporallyRanked);
+
     // Apply length normalization (penalize long entries dominating via keyword density)
-    const lengthNormalized = this.applyLengthNormalization(temporallyRanked);
+    const lengthNormalized = this.applyLengthNormalization(sourceBoosted);
 
     // Hard minimum score cutoff should be based on semantic / lexical relevance.
     // Lifecycle decay and time-decay are used for re-ranking, not for dropping
@@ -1014,6 +1019,29 @@ export class MemoryRetriever {
       };
     });
     return weighted.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Boost score for manually stored memories over auto-captured ones.
+   * Rationale (inspired by GPT memory): explicit user statements are more
+   * trustworthy than LLM-inferred facts, so they should rank higher when
+   * relevance scores are close.
+   *
+   * Manual memories: +5% boost. Auto-capture/legacy: no change.
+   */
+  private applySourceBoost(results: RetrievalResult[]): RetrievalResult[] {
+    if (results.length === 0) return results;
+    const boosted = results.map((r) => {
+      const meta = parseSmartMetadata(r.entry.metadata, r.entry);
+      const source = meta.source;
+      // Manual/explicit memories get a small trust boost
+      const factor = source === "manual" ? 1.05 : 1.0;
+      return {
+        ...r,
+        score: clamp01(r.score * factor, r.score),
+      };
+    });
+    return boosted.sort((a, b) => b.score - a.score);
   }
 
   private applyDecayBoost(results: RetrievalResult[]): RetrievalResult[] {

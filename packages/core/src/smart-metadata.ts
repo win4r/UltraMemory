@@ -36,6 +36,21 @@ export type MemorySource =
   | "consolidation"
   | "legacy";
 
+// ---------------------------------------------------------------------------
+// Provenance — Gemini-inspired traceability for every memory
+// ---------------------------------------------------------------------------
+
+export interface MemoryProvenance {
+  /** Session that created or last updated this memory */
+  session?: string;
+  /** Human-readable reason why this memory was created */
+  trigger?: string;
+  /** ISO date when the provenance event occurred */
+  date?: string;
+  /** Parent memory ID this was derived from (consolidation / merge) */
+  derived_from?: string[];
+}
+
 export interface SmartMemoryMetadata {
   l0_abstract: string;
   l1_overview: string;
@@ -61,6 +76,8 @@ export interface SmartMemoryMetadata {
   bad_recall_count: number;
   suppressed_until_turn: number;
   canonical_id?: string;
+  /** Provenance — tracks where and why this memory was created (Gemini-inspired) */
+  provenance?: MemoryProvenance;
   feedback_weight: number;  // 0.0-1.0, default 0.5
   trust_level: "source" | "generated";
   [key: string]: unknown;
@@ -122,6 +139,20 @@ function normalizeSource(value: unknown): MemorySource {
     default:
       return "legacy";
   }
+}
+
+function normalizeProvenance(value: unknown): MemoryProvenance | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const prov: MemoryProvenance = {};
+  if (typeof obj.session === "string" && obj.session.trim()) prov.session = obj.session.trim();
+  if (typeof obj.trigger === "string" && obj.trigger.trim()) prov.trigger = obj.trigger.trim();
+  if (typeof obj.date === "string" && obj.date.trim()) prov.date = obj.date.trim();
+  if (Array.isArray(obj.derived_from)) {
+    const ids = obj.derived_from.filter((id): id is string => typeof id === "string" && !!id.trim());
+    if (ids.length > 0) prov.derived_from = ids;
+  }
+  return Object.keys(prov).length > 0 ? prov : undefined;
 }
 
 function normalizeLayer(value: unknown): MemoryLayer {
@@ -319,6 +350,7 @@ export function parseSmartMetadata(
     bad_recall_count: clampCount(parsed.bad_recall_count, 0),
     suppressed_until_turn: clampCount(parsed.suppressed_until_turn, 0),
     canonical_id: normalizeOptionalString(parsed.canonical_id),
+    provenance: normalizeProvenance(parsed.provenance),
     feedback_weight: typeof parsed.feedback_weight === 'number'
       ? Math.max(0, Math.min(1, parsed.feedback_weight))
       : 0.5,
@@ -405,6 +437,10 @@ export function buildSmartMetadata(
       patch.canonical_id === undefined
         ? base.canonical_id
         : normalizeOptionalString(patch.canonical_id),
+    provenance:
+      patch.provenance === undefined
+        ? base.provenance
+        : normalizeProvenance(patch.provenance),
     feedback_weight: typeof patch.feedback_weight === 'number'
       ? Math.max(0, Math.min(1, patch.feedback_weight))
       : base.feedback_weight,

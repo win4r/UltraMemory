@@ -76,6 +76,40 @@ export async function startMcpServer(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
         break;
+      case "memory_checkpoint":
+        result = await service.checkpoint({
+          summary: (args as any).summary,
+          scope: (args as any).scope,
+          sessionId: (args as any).sessionId,
+          decisions: (args as any).decisions,
+          nextActions: (args as any).nextActions,
+          openLoops: (args as any).openLoops,
+          entities: (args as any).entities,
+        });
+        break;
+      case "memory_resume":
+        result = await service.resume({
+          scope: (args as any).scope,
+          sessionId: (args as any).sessionId,
+        });
+        if (result === null) {
+          result = { message: "No checkpoint found for the given scope/session." };
+        }
+        break;
+      case "memory_provenance":
+        result = await service.getProvenance((args as any).id);
+        if (result === null) {
+          result = { message: "Memory not found." };
+        }
+        break;
+      case "memory_consolidate":
+        result = await service.consolidate({
+          scope: (args as any).scope,
+          maxEntries: (args as any).maxEntries,
+          similarityThreshold: (args as any).similarityThreshold,
+          generateDigest: (args as any).generateDigest,
+        });
+        break;
       case "memory_feedback":
         result = await service.feedback({
           id: (args as any).id,

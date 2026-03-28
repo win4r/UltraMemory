@@ -658,7 +658,14 @@ export function registerMemoryStoreTool(
       name: "memory_store",
       label: "Memory Store",
       description:
-        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.",
+        "Save important information in long-term memory. Use for preferences, facts, decisions, and other notable information.\n" +
+        "\n" +
+        "PROACTIVE STORE GUIDANCE — call this tool during the conversation, not just at the end:\n" +
+        "• Reusable pattern discovered: when you find a solution, workaround, or design pattern that would help in future tasks, store it immediately (category: 'decision' or 'fact', importance: 0.8+).\n" +
+        "• Non-obvious preference confirmed: when the user explicitly confirms a preference that is not common sense (e.g., formatting style, naming convention, communication tone), store it right away (category: 'preference', importance: 0.8).\n" +
+        "• Corrected misconception: when you or the user correct a previous wrong assumption, store the correction so it is never repeated (category: 'reflection', importance: 0.85).\n" +
+        "• Complex problem solved: after resolving a multi-step debugging session or tricky integration, store the root cause and fix as a case (category: 'fact' or 'decision', importance: 0.8).\n" +
+        "Do NOT store: greetings, small talk, transient task status, or information that is already in memory (the tool deduplicates automatically).",
       parameters: Type.Object({
         text: Type.String({ description: "Information to remember" }),
         importance: Type.Optional(
