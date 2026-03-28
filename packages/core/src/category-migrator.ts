@@ -16,7 +16,12 @@ export interface MigrationResult {
 }
 
 export function migrateCategoryForEntry(entry: EntryLike): MigrationResult {
-  const parsed = entry.metadata ? JSON.parse(entry.metadata) : {};
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = entry.metadata ? JSON.parse(entry.metadata) : {};
+  } catch {
+    parsed = {};
+  }
 
   if (parsed.memory_category && typeof parsed.memory_category === "string") {
     return { memory_category: parsed.memory_category, changed: false };

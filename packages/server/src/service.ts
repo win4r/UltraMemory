@@ -423,6 +423,11 @@ export class MemoryService {
     });
   }
 
+  // NOTE: update() intentionally bypasses IngestionPipeline. The pipeline handles
+  // new memory creation (with dedup, conflict detection, and relation linking).
+  // update() patches existing records in-place (text, importance, category).
+  // For temporal fact updates (e.g., "user now prefers Python"), callers should
+  // use store() which routes through the pipeline with conflict detection.
   async update(params: UpdateParams): Promise<UpdateResult> {
     this.ensureInitialized();
 

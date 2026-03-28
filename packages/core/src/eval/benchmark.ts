@@ -52,7 +52,8 @@ export function scoreBenchmarkResult(
   query: BenchmarkQuery,
   results: BenchmarkResult[],
 ): Omit<QueryScore, "latencyMs"> {
-  const resultIds = results.map((r) => r.id);
+  const topResults = results.slice(0, 5); // Only score top 5
+  const resultIds = topResults.map((r) => r.id);
   const expectedSet = new Set(query.expectedIds);
   const notExpectedSet = new Set(query.notExpectedIds);
 

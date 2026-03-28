@@ -46,19 +46,21 @@ export function detectFactKeyConflict(
     return { hasConflict: false, isDuplicate: false };
   }
 
-  const match = existing.find((e) => e.factKey === incoming.factKey);
-  if (!match) {
-    return { hasConflict: false, isDuplicate: false };
+  let duplicateId: string | undefined;
+  for (const entry of existing) {
+    if (entry.factKey !== incoming.factKey) continue;
+    const incomingNorm = incoming.text.toLowerCase().trim();
+    const existingNorm = entry.text.toLowerCase().trim();
+    if (incomingNorm === existingNorm) {
+      duplicateId = entry.id; // Note duplicate but keep checking
+      continue;
+    }
+    // Found a genuine conflict — takes priority over duplicate
+    return { hasConflict: true, isDuplicate: false, conflictWith: entry.id };
   }
-
-  const sameText =
-    incoming.text.toLowerCase().trim() === match.text.toLowerCase().trim();
-
-  if (sameText) {
-    return { hasConflict: false, isDuplicate: true };
-  }
-
-  return { hasConflict: true, isDuplicate: false, conflictWith: match.id };
+  // No conflict found, but maybe a duplicate
+  if (duplicateId) return { hasConflict: false, isDuplicate: true, conflictWith: duplicateId };
+  return { hasConflict: false, isDuplicate: false };
 }
 
 // ---------------------------------------------------------------------------

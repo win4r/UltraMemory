@@ -117,6 +117,12 @@ export class IngestionPipeline {
 
     // -----------------------------------------------------------------------
     // 3. Dedup check
+    // NOTE: Dedup/conflict checks are not atomic. Concurrent ingests of the same
+    // text can both pass prechecks. LanceDB's deterministic ID (uuid5 from scope+text)
+    // provides a natural dedup — identical scope+text produces the same ID, and
+    // MemoryStore.store() silently returns the existing entry on ID collision.
+    // This makes exact-duplicate races harmless. Near-duplicate races (similar but
+    // not identical text) remain possible but are mitigated by consolidation.
     // -----------------------------------------------------------------------
     let similar: Array<{ entry: any; score: number }> = [];
     try {
