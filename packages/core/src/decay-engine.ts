@@ -69,6 +69,43 @@ export const DEFAULT_DECAY_CONFIG: DecayConfig = {
   peripheralDecayFloor: 0.5,
 };
 
+export const RETENTION_PRESETS: Record<string, Partial<Record<string, RetentionPolicy>>> = {
+  default: {
+    profile:     { minRetentionDays: 365, decayMultiplier: 0.2 },
+    preferences: { minRetentionDays: 180, decayMultiplier: 0.3 },
+    entities:    { minRetentionDays: 90,  decayMultiplier: 0.5 },
+    events:      { minRetentionDays: 30,  decayMultiplier: 1.0 },
+    cases:       { minRetentionDays: 60,  decayMultiplier: 0.8 },
+    patterns:    { minRetentionDays: 180, decayMultiplier: 0.3 },
+  },
+  legal: {
+    profile:     { minRetentionDays: 9999, decayMultiplier: 0 },
+    preferences: { minRetentionDays: 9999, decayMultiplier: 0 },
+    entities:    { minRetentionDays: 9999, decayMultiplier: 0 },
+    events:      { minRetentionDays: 9999, decayMultiplier: 0 },
+    cases:       { minRetentionDays: 9999, decayMultiplier: 0 },
+    patterns:    { minRetentionDays: 9999, decayMultiplier: 0 },
+  },
+  ephemeral: {
+    profile:     { minRetentionDays: 30, decayMultiplier: 0.5 },
+    preferences: { minRetentionDays: 14, decayMultiplier: 1.0 },
+    entities:    { minRetentionDays: 14, decayMultiplier: 1.5 },
+    events:      { minRetentionDays: 7,  decayMultiplier: 2.0 },
+    cases:       { minRetentionDays: 14, decayMultiplier: 1.5 },
+    patterns:    { minRetentionDays: 14, decayMultiplier: 1.0 },
+  },
+};
+
+export function resolveRetentionPreset(
+  presetName?: string,
+  customOverrides?: Partial<Record<string, RetentionPolicy>>,
+): Partial<Record<string, RetentionPolicy>> | undefined {
+  if (!presetName && !customOverrides) return undefined;
+  const base = presetName ? (RETENTION_PRESETS[presetName] ?? RETENTION_PRESETS.default) : {};
+  if (!customOverrides) return base;
+  return { ...base, ...customOverrides };
+}
+
 export interface DecayScore {
   memoryId: string;
   recency: number;

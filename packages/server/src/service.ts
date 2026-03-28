@@ -280,9 +280,17 @@ export class MemoryService {
       chunking: this.config.embedding.chunking,
     });
 
+    // Resolve retention preset + custom overrides into merged policies
+    const { resolveRetentionPreset } = await import("@ultramemory/core");
+    const retentionPolicies = resolveRetentionPreset(
+      this.config.retentionPreset,
+      this.config.retentionPolicies,
+    );
+
     this.decayEngine = createDecayEngine({
       ...DEFAULT_DECAY_CONFIG,
       ...(this.config.decay?.enabled === false ? {} : this.config.decay || {}),
+      ...(retentionPolicies ? { retentionPolicies } : {}),
     });
 
     this.tierManager = createTierManager({
