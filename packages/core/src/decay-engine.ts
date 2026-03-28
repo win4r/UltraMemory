@@ -78,6 +78,7 @@ export interface DecayableMemory {
   accessCount: number;
   createdAt: number;
   lastAccessedAt: number;
+  feedbackWeight?: number;
 }
 
 export interface DecayEngine {
@@ -179,10 +180,12 @@ export function createDecayEngine(
   }
 
   /**
-   * Intrinsic value: importance × confidence.
+   * Intrinsic value: importance × confidence × feedbackMultiplier.
    */
   function intrinsic(memory: DecayableMemory): number {
-    return memory.importance * memory.confidence;
+    const feedbackWeight = memory.feedbackWeight ?? 0.5;
+    const feedbackMultiplier = 0.6 + 0.8 * feedbackWeight;
+    return memory.importance * (memory.confidence ?? 1) * feedbackMultiplier;
   }
 
   function scoreOne(memory: DecayableMemory, now: number): DecayScore {

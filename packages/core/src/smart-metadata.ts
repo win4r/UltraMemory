@@ -78,6 +78,7 @@ export interface SmartMemoryMetadata {
   canonical_id?: string;
   /** Provenance — tracks where and why this memory was created (Gemini-inspired) */
   provenance?: MemoryProvenance;
+  feedback_weight: number;  // 0.0-1.0, default 0.5
   [key: string]: unknown;
 }
 
@@ -345,6 +346,9 @@ export function parseSmartMetadata(
     suppressed_until_turn: clampCount(parsed.suppressed_until_turn, 0),
     canonical_id: normalizeOptionalString(parsed.canonical_id),
     provenance: normalizeProvenance(parsed.provenance),
+    feedback_weight: typeof parsed.feedback_weight === 'number'
+      ? Math.max(0, Math.min(1, parsed.feedback_weight))
+      : 0.5,
   };
 
   return normalized;
@@ -431,6 +435,9 @@ export function buildSmartMetadata(
       patch.provenance === undefined
         ? base.provenance
         : normalizeProvenance(patch.provenance),
+    feedback_weight: typeof patch.feedback_weight === 'number'
+      ? Math.max(0, Math.min(1, patch.feedback_weight))
+      : base.feedback_weight,
   };
 }
 
@@ -530,9 +537,38 @@ export function getDecayableFromEntry(
     accessCount: meta.access_count,
     createdAt,
     lastAccessedAt: meta.last_accessed_at || createdAt,
+    feedbackWeight: meta.feedback_weight,
   };
 
   return { memory, meta };
+}
+
+// ============================================================================
+// Scoring Trace — debug explainability for retrieval pipeline
+// ============================================================================
+
+export interface ScoringTrace {
+  vectorScore?: number;
+  vectorRank?: number;
+  bm25Score?: number;
+  bm25Rank?: number;
+  l0Score?: number;
+  l1Score?: number;
+  l2Score?: number;
+  rrfFused?: number;
+  rerankScore?: number;
+  rerankBlended?: number;
+  recencyBoost?: number;
+  importanceWeight?: number;
+  lengthNorm?: number;
+  timeDecay?: number;
+  lifecycleDecay?: number;
+  mmrPenalty?: number;
+  relationBoost?: number;
+  feedbackWeight?: number;
+  finalScore: number;
+  queryType?: string;
+  searchPath?: "hybrid" | "vector-only" | "bm25-only";
 }
 
 // ============================================================================

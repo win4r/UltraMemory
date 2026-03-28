@@ -32,7 +32,9 @@ import {
   toLifecycleMemory,
   isNoise,
   type MemoryProvenance,
+  getDecayableFromEntry,
 } from "@ultramemory/core";
+import { FeedbackLearner } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +68,8 @@ export interface RecallParams {
   depth?: "l0" | "l1" | "l2" | "full";
   /** Recall source: "manual" (user-triggered) or "auto" (system auto-recall). Only manual recalls reinforce access count. Default: "manual" */
   source?: "manual" | "auto";
+  /** Enable debug scoring trace. When true, each result includes a full scoringTrace breakdown. Default: false. */
+  debug?: boolean;
 }
 
 export interface ScoringTrace {
@@ -187,6 +191,7 @@ export class MemoryService {
   private scopeManager!: MemoryScopeManager;
   private decayEngine!: DecayEngine;
   private tierManager!: TierManager;
+  private feedbackLearner?: FeedbackLearner;
   private initialized = false;
 
   constructor(config: Partial<UltraMemoryConfig> & { embedding: UltraMemoryConfig["embedding"] }) {
@@ -236,6 +241,8 @@ export class MemoryService {
       ...(this.config.tier || {}),
     });
 
+    this.feedbackLearner = new FeedbackLearner(this._store, this.config.decay?.feedbackAlpha ?? 0.15);
+
     this.retriever = createRetriever(
       this._store,
       this.embedder,
@@ -266,6 +273,7 @@ export class MemoryService {
     this.scopeManager = null!;
     this.decayEngine = null!;
     this.tierManager = null!;
+    this.feedbackLearner = undefined;
     this.initialized = false;
 
     process.stderr.write("[MemoryService] shutdown complete\n");
@@ -313,10 +321,15 @@ export class MemoryService {
     }
 
     // Build metadata with optional provenance
+    const meta = parseSmartMetadata("{}", { text, category, importance } as any);
+    const l0 = (meta as any).l0_abstract || text;
+    const l1 = (meta as any).l1_overview || `- ${text}`;
+    const l2 = (meta as any).l2_content || text;
+
     const metadataPatch: Record<string, unknown> = {
-      l0_abstract: text,
-      l1_overview: `- ${text}`,
-      l2_content: text,
+      l0_abstract: l0,
+      l1_overview: l1,
+      l2_content: l2,
       source: "manual",
       state: "confirmed",
       last_confirmed_use_at: Date.now(),
@@ -331,6 +344,9 @@ export class MemoryService {
       buildSmartMetadata({ text, category, importance }, metadataPatch as any),
     );
 
+    // Embed multi-layer vectors (reuses main vector when layer text === text)
+    const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(text, vector, l0, l1, l2);
+
     const entry = await this._store.store({
       text,
       vector,
@@ -338,6 +354,9 @@ export class MemoryService {
       scope,
       importance,
       metadata,
+      vector_l0: vectorL0,
+      vector_l1: vectorL1,
+      vector_l2: vectorL2,
     });
 
     return {
@@ -361,6 +380,7 @@ export class MemoryService {
       limit,
       scopeFilter,
       category,
+      debug: params.debug,
     });
 
     // Update access metadata only for manual recalls (not auto-recall)
@@ -373,6 +393,25 @@ export class MemoryService {
           { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
           scopeFilter,
         ).catch(() => {});
+      }
+    }
+
+    // Lifecycle evaluation (all sources, not just auto)
+    if (this.decayEngine && this.tierManager) {
+      for (const r of results) {
+        const decayable = getDecayableFromEntry(r.entry);
+        const decayScore = this.decayEngine.score(decayable.memory);
+        const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+        if (transition) {
+          this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
+        }
+      }
+    }
+
+    // Positive feedback for manual recalls
+    if (params.source !== "auto" && this.feedbackLearner) {
+      for (const r of results) {
+        this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
       }
     }
 
@@ -398,16 +437,20 @@ export class MemoryService {
 
       // Build scoring trace from retrieval result metadata (if available)
       const sources = (r as any).sources || {};
-      const scoringTrace: ScoringTrace = {
-        vectorRank: sources.vector?.rank,
-        vectorScore: sources.vector?.score,
-        bm25Rank: sources.bm25?.rank,
-        bm25Score: sources.bm25?.score,
-        rrfFused: sources.fused?.score,
-        rerankScore: sources.rerank?.score,
-        finalScore: r.score,
-        queryType: (r as any).queryType,
-      };
+      // Use the richer per-stage trace when debug=true, otherwise build a
+      // lightweight trace from the sources metadata (always available).
+      const scoringTrace: ScoringTrace = (params.debug && (r as any).scoringTrace)
+        ? (r as any).scoringTrace
+        : {
+            vectorRank: sources.vector?.rank,
+            vectorScore: sources.vector?.score,
+            bm25Rank: sources.bm25?.rank,
+            bm25Score: sources.bm25?.score,
+            rrfFused: sources.fused?.score,
+            rerankScore: sources.reranked?.score,
+            finalScore: r.score,
+            queryType: (r as any).queryType,
+          };
 
       return {
         id: r.entry.id,
@@ -430,7 +473,8 @@ export class MemoryService {
 
     if (params.text !== undefined) {
       updates.text = params.text;
-      updates.vector = await this.embedder.embedPassage(params.text);
+      const newVector = await this.embedder.embedPassage(params.text);
+      updates.vector = newVector;
 
       // Regenerate L0/L1/L2 metadata to match new text so recall with
       // depth=l0/l1/l2 returns up-to-date summaries.
@@ -443,11 +487,14 @@ export class MemoryService {
       } catch {
         // fail-open: rebuild metadata from scratch if lookup fails
       }
+      const l0 = params.text.slice(0, 200);
+      const l1 = `- ${params.text.slice(0, 1000)}`;
+      const l2 = params.text;
       const updatedMeta = {
         ...existingMeta,
-        l0_abstract: params.text.slice(0, 200),
-        l1_overview: `- ${params.text.slice(0, 1000)}`,
-        l2_content: params.text,
+        l0_abstract: l0,
+        l1_overview: l1,
+        l2_content: l2,
       };
       updates.metadata = stringifySmartMetadata(
         buildSmartMetadata(
@@ -455,6 +502,14 @@ export class MemoryService {
           updatedMeta as any,
         ),
       );
+
+      // Re-embed L0/L1/L2 vectors to keep multi-channel search in sync
+      const [vectorL0, vectorL1, vectorL2] = await this.embedMultiLayer(
+        params.text, newVector, l0, l1, l2,
+      );
+      updates.vector_l0 = vectorL0;
+      updates.vector_l1 = vectorL1;
+      updates.vector_l2 = vectorL2;
 
       fieldsUpdated.push("text");
     }
@@ -477,6 +532,19 @@ export class MemoryService {
 
   async forget(params: ForgetParams): Promise<ForgetResult> {
     this.ensureInitialized();
+
+    // Negative feedback propagation to related memories
+    if (this.feedbackLearner) {
+      const entry = await this._store.getById(params.id);
+      if (entry) {
+        const meta = parseSmartMetadata(entry.metadata, entry);
+        for (const rel of meta.relations ?? []) {
+          this.feedbackLearner.recordNegative(rel.targetId).catch(() => {});
+        }
+        this.feedbackLearner.setDirect(params.id, 0.1).catch(() => {});
+      }
+    }
+
     const ok = await this._store.delete(params.id);
     return { ok };
   }
@@ -508,6 +576,78 @@ export class MemoryService {
   async stats(scopeFilter?: string[]): Promise<StatsResult> {
     this.ensureInitialized();
     return this._store.stats(scopeFilter);
+  }
+
+  async feedback(params: { id: string; helpful: boolean }): Promise<{ ok: boolean; id: string }> {
+    this.ensureInitialized();
+    if (!this.feedbackLearner) {
+      return { ok: false, id: params.id };
+    }
+    await this.feedbackLearner.recordExplicit(params.id, params.helpful);
+    return { ok: true, id: params.id };
+  }
+
+  /**
+   * Backfill multi-vector columns (vector_l0/l1/l2) for all memories that
+   * still have zero vectors in those columns. Reads L0/L1/L2 texts from
+   * smart metadata and embeds each layer, reusing the main vector when the
+   * layer text is identical to the stored text.
+   *
+   * @param log  Progress logger (defaults to console.error)
+   * @returns    Number of memories updated
+   */
+  async backfillVectors(
+    log: (msg: string) => void = console.error,
+  ): Promise<number> {
+    this.ensureInitialized();
+
+    // list() returns entries without vectors for performance; we use it only
+    // for IDs/text/metadata, then fetch the full entry (with vector) via getById.
+    const entries = await this._store.list(undefined, undefined, 10000, 0);
+    const total = entries.length;
+    log(`backfill-vectors: scanning ${total} memories...`);
+
+    let done = 0;
+    let errors = 0;
+
+    for (const entry of entries) {
+      try {
+        // Fetch the full entry including the stored main vector
+        const full = await this._store.getById(entry.id);
+        if (!full) continue;
+
+        // If the main vector is already populated, we can use the reuse
+        // optimisation in embedMultiLayer; otherwise embed the text fresh.
+        const mainVector = full.vector.length > 0
+          ? full.vector
+          : await this.embedder.embedPassage(full.text);
+
+        const meta = parseSmartMetadata(full.metadata, full);
+        const l0 = meta.l0_abstract || full.text.slice(0, 200);
+        const l1 = meta.l1_overview || `- ${full.text.slice(0, 1000)}`;
+        const l2 = meta.l2_content || full.text;
+
+        const [vector_l0, vector_l1, vector_l2] = await this.embedMultiLayer(
+          full.text,
+          mainVector,
+          l0,
+          l1,
+          l2,
+        );
+
+        await this._store.update(full.id, { vector_l0, vector_l1, vector_l2 });
+        done++;
+        if (done % 50 === 0) {
+          log(`backfill-vectors: backfilled ${done}/${total} memories`);
+        }
+      } catch (err) {
+        errors++;
+        log(`backfill-vectors: ERROR on ${entry.id} — ${String(err)}`);
+      }
+    }
+
+    log(`backfill-vectors: complete — ${done} updated, ${errors} errors`);
+    return done;
   }
 
   // -----------------------------------------------------------------------
@@ -674,6 +814,38 @@ export class MemoryService {
   // -----------------------------------------------------------------------
   // Internal
   // -----------------------------------------------------------------------
+
+  /**
+   * Embed L0/L1/L2 layer texts, reusing the main text vector when a layer
+   * text is identical to the original text (avoids redundant API calls).
+   */
+  private async embedMultiLayer(
+    text: string,
+    textVector: number[],
+    l0: string,
+    l1: string,
+    l2: string,
+  ): Promise<[number[], number[], number[]]> {
+    const needsEmbed: string[] = [];
+    const mapping: Array<number | "reuse"> = [];
+
+    for (const layerText of [l0, l1, l2]) {
+      if (layerText === text) {
+        mapping.push("reuse");
+      } else {
+        mapping.push(needsEmbed.length);
+        needsEmbed.push(layerText);
+      }
+    }
+
+    const embedded = needsEmbed.length > 0
+      ? await this.embedder.embedBatchPassage(needsEmbed)
+      : [];
+
+    return mapping.map((m) =>
+      m === "reuse" ? textVector : embedded[m as number],
+    ) as [number[], number[], number[]];
+  }
 
   private ensureInitialized(): void {
     if (!this.initialized) {
