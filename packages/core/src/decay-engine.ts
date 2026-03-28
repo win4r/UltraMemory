@@ -16,6 +16,12 @@ import type { MemoryTier } from "./memory-categories.js";
 
 const MS_PER_DAY = 86_400_000;
 
+export interface RetentionPolicy {
+  minRetentionDays: number;
+  decayMultiplier: number;
+  maxRetentionDays?: number;
+}
+
 export interface DecayConfig {
   /** Days until recency score halves (default: 30) */
   recencyHalfLifeDays: number;
@@ -43,6 +49,8 @@ export interface DecayConfig {
   workingDecayFloor: number;
   /** Decay floor for Peripheral memories (default: 0.5) */
   peripheralDecayFloor: number;
+  /** Category-specific retention policies */
+  retentionPolicies?: Partial<Record<string, RetentionPolicy>>;
 }
 
 export const DEFAULT_DECAY_CONFIG: DecayConfig = {
@@ -83,7 +91,7 @@ export interface DecayableMemory {
 
 export interface DecayEngine {
   /** Calculate decay score for a single memory */
-  score(memory: DecayableMemory, now?: number): DecayScore;
+  score(memory: DecayableMemory, now?: number, category?: string): DecayScore;
   /** Calculate decay scores for multiple memories */
   scoreAll(memories: DecayableMemory[], now?: number): DecayScore[];
   /** Apply decay boost to search results (multiplies each score by boost) */
@@ -103,8 +111,9 @@ export interface DecayEngine {
 // ============================================================================
 
 export function createDecayEngine(
-  config: DecayConfig = DEFAULT_DECAY_CONFIG,
+  config: Partial<DecayConfig> = {},
 ): DecayEngine {
+  const merged = { ...DEFAULT_DECAY_CONFIG, ...config };
   const {
     recencyHalfLifeDays: halfLife,
     recencyWeight: rw,
@@ -119,7 +128,8 @@ export function createDecayEngine(
     coreDecayFloor,
     workingDecayFloor,
     peripheralDecayFloor,
-  } = config;
+    retentionPolicies,
+  } = merged;
 
   function getTierBeta(tier: MemoryTier): number {
     switch (tier) {
@@ -188,11 +198,29 @@ export function createDecayEngine(
     return memory.importance * (memory.confidence ?? 1) * feedbackMultiplier;
   }
 
-  function scoreOne(memory: DecayableMemory, now: number): DecayScore {
+  function scoreOne(memory: DecayableMemory, now: number, category?: string): DecayScore {
     const r = recency(memory, now);
     const f = frequency(memory);
     const i = intrinsic(memory);
-    const composite = rw * r + fw * f + iw * i;
+    let composite = rw * r + fw * f + iw * i;
+
+    // Apply retention policy if category provided
+    if (category && retentionPolicies?.[category]) {
+      const policy = retentionPolicies[category]!;
+      const ageDays = (now - memory.createdAt) / MS_PER_DAY;
+
+      if (ageDays <= policy.minRetentionDays) {
+        composite = Math.max(composite, 0.95);
+      } else if (policy.decayMultiplier > 0 && policy.decayMultiplier !== 1.0) {
+        // Recompute recency with modified half-life
+        const modifiedHL = halfLife / policy.decayMultiplier;
+        const effHL = modifiedHL * Math.exp(mu * memory.importance);
+        const modLambda = Math.LN2 / effHL;
+        const beta = getTierBeta(memory.tier);
+        const modRecency = Math.exp(-modLambda * Math.pow(ageDays, beta));
+        composite = rw * modRecency + fw * f + iw * i;
+      }
+    }
 
     return {
       memoryId: memory.id,
@@ -204,8 +232,8 @@ export function createDecayEngine(
   }
 
   return {
-    score(memory, now = Date.now()) {
-      return scoreOne(memory, now);
+    score(memory, now = Date.now(), category?) {
+      return scoreOne(memory, now, category);
     },
 
     scoreAll(memories, now = Date.now()) {
