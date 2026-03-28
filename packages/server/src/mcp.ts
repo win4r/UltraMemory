@@ -38,6 +38,8 @@ export async function startMcpServer(
             : undefined,
           category: (args as any).category,
           depth: (args as any).depth,
+          render: (args as any).render,
+          taskContext: (args as any).taskContext,
         });
         break;
       case "memory_update":
@@ -65,6 +67,12 @@ export async function startMcpServer(
         result = await service.stats(
           (args as any).scope ? [(args as any).scope] : undefined,
         );
+        break;
+      case "memory_auto_capture":
+        result = await service.autoCapture({
+          conversationText: (args as any).conversationText,
+          scope: (args as any).scope,
+        });
         break;
       case "memory_health":
         result = await service.health(

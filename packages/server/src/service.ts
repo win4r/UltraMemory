@@ -71,6 +71,10 @@ export interface RecallParams {
   source?: "manual" | "auto";
   /** Enable debug scoring trace. When true, each result includes a full scoringTrace breakdown. Default: false. */
   debug?: boolean;
+  /** Rendering mode: verbatim (default), highlight (reorder by contextual relevance), synthesize (LLM summary, falls back to highlight) */
+  render?: "verbatim" | "highlight" | "synthesize";
+  /** Optional task context hint for highlight/synthesize rendering modes */
+  taskContext?: string;
 }
 
 export interface ScoringTrace {
@@ -97,6 +101,8 @@ export interface RecallResult {
   timestamp: number;
   /** Scoring breakdown for explainability (when available) */
   scoringTrace?: ScoringTrace;
+  /** Contextual relevance score (0-1) when render mode is highlight or synthesize */
+  relevance?: number;
 }
 
 export interface UpdateParams {
@@ -280,9 +286,17 @@ export class MemoryService {
       chunking: this.config.embedding.chunking,
     });
 
+    // Resolve retention preset + custom overrides into merged policies
+    const { resolveRetentionPreset } = await import("@ultramemory/core");
+    const retentionPolicies = resolveRetentionPreset(
+      this.config.retentionPreset,
+      this.config.retentionPolicies,
+    );
+
     this.decayEngine = createDecayEngine({
       ...DEFAULT_DECAY_CONFIG,
       ...(this.config.decay?.enabled === false ? {} : this.config.decay || {}),
+      ...(retentionPolicies ? { retentionPolicies } : {}),
     });
 
     this.tierManager = createTierManager({
@@ -428,41 +442,52 @@ export class MemoryService {
       debug: params.debug,
     });
 
-    // Update access metadata only for manual recalls (not auto-recall)
+    // Post-retrieval metadata updates (serialized to avoid read-modify-write races).
+    // Each patch is awaited sequentially per entry so concurrent patchMetadata
+    // calls don't clobber each other's fields (access_count, tier, feedback).
     if (params.source !== "auto") {
       const now = Date.now();
       for (const r of results) {
         const meta = parseSmartMetadata(r.entry.metadata, r.entry);
-        this._store.patchMetadata(
+        // 1. Access count
+        await this._store.patchMetadata(
           r.entry.id,
           { access_count: (meta.access_count ?? 0) + 1, last_accessed_at: now },
           scopeFilter,
         ).catch(() => {});
-      }
-    }
 
-    // Lifecycle evaluation (all sources, not just auto)
-    if (this.decayEngine && this.tierManager) {
-      for (const r of results) {
-        const { memory, meta } = getDecayableFromEntry(r.entry);
-        const decayScore = this.decayEngine.score(memory, undefined, meta.memory_category);
-        const transition = this.tierManager.evaluate(memory, decayScore);
-        if (transition) {
-          this._store.patchMetadata(r.entry.id, { tier: transition.toTier }).catch(() => {});
+        // 2. Lifecycle/tier evaluation
+        if (this.decayEngine && this.tierManager) {
+          const decayable = getDecayableFromEntry(r.entry);
+          const decayScore = this.decayEngine.score(decayable.memory, undefined, decayable.meta.memory_category);
+          const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+          if (transition) {
+            await this._store.patchMetadata(r.entry.id, { tier: transition.toTier }, scopeFilter).catch(() => {});
+          }
+        }
+
+        // 3. Positive feedback
+        if (this.feedbackLearner) {
+          await this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
         }
       }
-    }
-
-    // Positive feedback for manual recalls
-    if (params.source !== "auto" && this.feedbackLearner) {
-      for (const r of results) {
-        this.feedbackLearner.recordPositive(r.entry.id).catch(() => {});
+    } else {
+      // Auto-recall: still run lifecycle evaluation (but no access count bump / feedback)
+      if (this.decayEngine && this.tierManager) {
+        for (const r of results) {
+          const decayable = getDecayableFromEntry(r.entry);
+          const decayScore = this.decayEngine.score(decayable.memory, undefined, decayable.meta.memory_category);
+          const transition = this.tierManager.evaluate(decayable.memory, decayScore);
+          if (transition) {
+            await this._store.patchMetadata(r.entry.id, { tier: transition.toTier }, scopeFilter).catch(() => {});
+          }
+        }
       }
     }
 
     const depth = params.depth || "full";
 
-    return results.map((r) => {
+    const mapped = results.map((r) => {
       // L0/L1/L2 dynamic depth loading — return appropriate content tier
       const meta = parseSmartMetadata(r.entry.metadata, r.entry);
       let text: string;
@@ -506,8 +531,28 @@ export class MemoryService {
         score: r.score,
         timestamp: r.entry.timestamp,
         scoringTrace,
-      };
+      } as RecallResult;
     });
+
+    // Apply contextual rendering if requested
+    if (params.render && params.render !== "verbatim" && mapped.length > 0) {
+      const { renderMemories } = await import("@ultramemory/core");
+      const rendered = renderMemories(
+        mapped.map(r => ({ id: r.id, text: r.text, score: r.score, category: r.category })),
+        params.query,
+        params.render,
+        params.taskContext,
+      );
+      // Reorder results to match rendered order and add relevance
+      const renderedMap = new Map(rendered.memories.map((m: { id: string; relevance: number }, i: number) => [m.id, { ...m, order: i }]));
+      mapped.sort((a, b) => (renderedMap.get(a.id)?.order ?? 99) - (renderedMap.get(b.id)?.order ?? 99));
+      for (const r of mapped) {
+        const rm = renderedMap.get(r.id);
+        if (rm) r.relevance = rm.relevance;
+      }
+    }
+
+    return mapped;
   }
 
   // NOTE: update() intentionally bypasses IngestionPipeline. The pipeline handles
@@ -737,6 +782,49 @@ export class MemoryService {
   }
 
   // -----------------------------------------------------------------------
+  // Auto-capture (heuristic extraction for MCP — P1-2)
+  // -----------------------------------------------------------------------
+
+  async autoCapture(params: { conversationText: string; scope?: string }): Promise<{
+    skippedSalience: boolean;
+    stored: number;
+    items: Array<{ id: string; category: string; text: string; action: string }>;
+  }> {
+    this.ensureInitialized();
+
+    const { shouldCapture, extractHeuristic } = await import("@ultramemory/core");
+
+    if (!shouldCapture(params.conversationText)) {
+      return { skippedSalience: true, stored: 0, items: [] };
+    }
+
+    const extracted = extractHeuristic(params.conversationText);
+    if (extracted.length === 0) {
+      return { skippedSalience: false, stored: 0, items: [] };
+    }
+
+    const scope = params.scope || this.scopeManager.getDefaultScope?.("main") || "global";
+    const results: Array<{ id: string; category: string; text: string; action: string }> = [];
+
+    for (const item of extracted) {
+      const result = await this.pipeline.ingest({
+        text: item.text,
+        category: item.category as any,
+        importance: item.importance,
+        scope,
+        source: "auto-capture",
+      });
+      results.push({ id: result.id, category: item.category, text: item.text, action: result.action });
+    }
+
+    return {
+      skippedSalience: false,
+      stored: results.filter((r) => r.action === "created").length,
+      items: results,
+    };
+  }
+
+  // -----------------------------------------------------------------------
   // Provenance query (Gemini-inspired)
   // -----------------------------------------------------------------------
 
@@ -760,140 +848,29 @@ export class MemoryService {
   }
 
   // -----------------------------------------------------------------------
-  // Memory consolidation (Gemini-inspired)
+  // Memory consolidation (Semantic Consolidation Engine — P1-1)
   // -----------------------------------------------------------------------
 
   async consolidate(params: ConsolidateParams): Promise<ConsolidateResult> {
     this.ensureInitialized();
 
-    const scope = params.scope || "global";
-    const maxEntries = clampInt(params.maxEntries ?? 100, 10, 500);
-    const similarityThreshold = params.similarityThreshold ?? 0.85;
+    const { ConsolidationEngine } = await import("@ultramemory/core");
+    const engine = new ConsolidationEngine(this._store, {
+      clusterThreshold: params.similarityThreshold ?? 0.82,
+      mergeThreshold: params.similarityThreshold
+        ? Math.min(params.similarityThreshold + 0.1, 0.98)
+        : 0.92,
+      maxEntriesPerRun: clampInt(params.maxEntries ?? 500, 10, 500),
+      abstractionMinClusterSize: 5,
+    });
 
-    // Fetch all memories in scope
-    const entries = await this._store.list([scope], undefined, maxEntries, 0);
-    if (entries.length === 0) {
-      return { mergedCount: 0, digestId: null, scope, originalCount: 0 };
-    }
-
-    // Group by category for smarter merging
-    const byCategory = new Map<string, typeof entries>();
-    for (const e of entries) {
-      const meta = parseSmartMetadata(e.metadata, e);
-      const cat = meta.memory_category || e.category;
-      if (!byCategory.has(cat)) byCategory.set(cat, []);
-      byCategory.get(cat)!.push(e);
-    }
-
-    // Find near-duplicates within each category and merge
-    let mergedCount = 0;
-    const mergedIds: string[] = [];
-
-    for (const [_cat, catEntries] of byCategory) {
-      if (catEntries.length < 2) continue;
-
-      // Embed all entries for pairwise comparison
-      const vectors = await Promise.all(
-        catEntries.map((e) =>
-          e.vector?.length ? Promise.resolve(e.vector) : this.embedder.embedPassage(e.text),
-        ),
-      );
-
-      const merged = new Set<number>();
-      for (let i = 0; i < catEntries.length; i++) {
-        if (merged.has(i)) continue;
-        for (let j = i + 1; j < catEntries.length; j++) {
-          if (merged.has(j)) continue;
-          const sim = cosineSimilarity(vectors[i], vectors[j]);
-          if (sim >= similarityThreshold) {
-            // Merge j into i: keep the higher-importance one, archive the other
-            const keep = catEntries[i].importance >= catEntries[j].importance ? i : j;
-            const drop = keep === i ? j : i;
-
-            // Mark dropped entry as archived with provenance
-            const dropMeta = parseSmartMetadata(catEntries[drop].metadata, catEntries[drop]);
-            await this._store.patchMetadata(catEntries[drop].id, {
-              state: "archived",
-              superseded_by: catEntries[keep].id,
-              provenance: {
-                ...(dropMeta.provenance || {}),
-                trigger: `consolidated: merged into ${catEntries[keep].id} (similarity=${sim.toFixed(3)})`,
-                date: new Date().toISOString().slice(0, 10),
-              },
-            }, [scope]).catch(() => {});
-
-            // Add relation on keeper
-            await this._store.patchMetadata(catEntries[keep].id, {
-              provenance: {
-                ...(parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance || {}),
-                derived_from: [
-                  ...((parseSmartMetadata(catEntries[keep].metadata, catEntries[keep]).provenance?.derived_from) || []),
-                  catEntries[drop].id,
-                ],
-              },
-            }, [scope]).catch(() => {});
-
-            merged.add(drop);
-            mergedIds.push(catEntries[drop].id);
-            mergedCount++;
-          }
-        }
-      }
-    }
-
-    // Generate a digest — compressed user profile from remaining active memories
-    const activeEntries = entries.filter((e) => !mergedIds.includes(e.id));
-    let digestId: string | null = null;
-
-    if (activeEntries.length > 0 && params.generateDigest !== false) {
-      const bullets = activeEntries
-        .sort((a, b) => b.importance - a.importance)
-        .slice(0, 30)
-        .map((e) => {
-          const meta = parseSmartMetadata(e.metadata, e);
-          return `[${meta.memory_category}] ${e.text.slice(0, 150)}`;
-        });
-
-      const digestText = `[DIGEST] User profile consolidated from ${activeEntries.length} memories (${scope}):\n${bullets.join("\n")}`;
-      const digestVector = await this.embedder.embedPassage(digestText);
-
-      const digestMetadata = stringifySmartMetadata(
-        buildSmartMetadata(
-          { text: digestText, category: "other", importance: 0.85 },
-          {
-            l0_abstract: `[DIGEST] ${scope}: ${activeEntries.length} memories consolidated`,
-            l1_overview: bullets.slice(0, 10).map((b) => `- ${b}`).join("\n"),
-            l2_content: digestText,
-            source: "consolidation",
-            state: "confirmed",
-            tier: "core",
-            memory_category: "profile",
-            provenance: {
-              trigger: `consolidation: ${entries.length} memories → ${activeEntries.length} active + ${mergedCount} merged`,
-              date: new Date().toISOString().slice(0, 10),
-              derived_from: activeEntries.slice(0, 20).map((e) => e.id),
-            },
-          },
-        ),
-      );
-
-      const digestEntry = await this._store.store({
-        text: digestText,
-        vector: digestVector,
-        category: "other" as MemoryEntry["category"],
-        scope,
-        importance: 0.85,
-        metadata: digestMetadata,
-      });
-
-      digestId = digestEntry.id;
-    }
+    const result = await engine.run(params.scope || "global");
 
     return {
-      originalCount: entries.length,
-      mergedCount,
-      digestId,
-      scope,
+      originalCount: result.originalCount,
+      mergedCount: result.mergedCount,
+      digestId: null, // no LLM abstraction in P1-1
+      scope: result.scope,
     };
   }
 

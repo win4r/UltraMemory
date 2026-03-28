@@ -89,6 +89,8 @@ export interface UltraMemoryConfig {
   smartExtraction?: boolean;
   entityAliases?: Record<string, string>;
   enableFeedbackTool?: boolean;  // default false
+  retentionPreset?: string;
+  retentionPolicies?: Partial<Record<string, import("@ultramemory/core").RetentionPolicy>>;
 }
 
 const DEFAULT_DB_PATH = join(homedir(), ".ultramemory", "db");
@@ -116,6 +118,8 @@ export function resolveConfig(
     scopes: partial.scopes,
     smartExtraction: partial.smartExtraction ?? true,
     enableFeedbackTool: partial.enableFeedbackTool ?? false,
+    retentionPreset: partial.retentionPreset,
+    retentionPolicies: partial.retentionPolicies,
   };
 }
 

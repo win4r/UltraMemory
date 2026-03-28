@@ -81,6 +81,15 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
             description: "Content depth: l0 (one-sentence ~100 tokens), l1 (bullet list ~2K tokens), l2/full (complete text). Default: full",
             enum: ["l0", "l1", "l2", "full"],
           },
+          render: {
+            type: "string",
+            enum: ["verbatim", "highlight", "synthesize"],
+            description: "Rendering mode: verbatim (default), highlight (reorder by relevance), synthesize (LLM summary, falls back to highlight)",
+          },
+          taskContext: {
+            type: "string",
+            description: "Optional task context hint for highlight/synthesize modes",
+          },
         },
         required: ["query"],
         additionalProperties: false,
@@ -291,6 +300,28 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
   ];
 
   tools.push(
+    {
+      name: "memory_auto_capture",
+      description:
+        "Extract and store memory-worthy items from conversation text. " +
+        "Uses heuristic pattern matching to identify preferences, identity, decisions, and corrections. " +
+        "Returns extracted items with their categories and storage status.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          conversationText: {
+            type: "string",
+            description: "The conversation text to analyze for memory-worthy content",
+          },
+          scope: {
+            type: "string",
+            description: "Scope for stored memories (default: global)",
+          },
+        },
+        required: ["conversationText"],
+        additionalProperties: false,
+      },
+    },
     {
       name: "memory_health",
       description: "Get corpus health metrics — category distribution, staleness, conflict count, tier balance, and source distribution",
