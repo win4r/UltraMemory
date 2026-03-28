@@ -48,6 +48,26 @@ describe("decay engine with retention policies", () => {
       `With policy (${withPolicy.composite}) should be < without (${withoutPolicy.composite})`);
   });
 
+  it("enforces maxRetentionDays by capping composite to 0.05", () => {
+    const engine = createDecayEngine({
+      recencyHalfLifeDays: 14,
+      peripheralDecayFloor: 0,
+      retentionPolicies: {
+        events: { minRetentionDays: 7, decayMultiplier: 1.0, maxRetentionDays: 60 },
+      },
+    });
+
+    // Memory is 90 days old, exceeding maxRetentionDays of 60
+    const score = engine.score({
+      id: "a", importance: 0.9, confidence: 0.9, tier: "peripheral",
+      accessCount: 5, createdAt: Date.now() - 90 * 86400000,
+      lastAccessedAt: Date.now() - 10 * 86400000,
+    }, Date.now(), "events");
+
+    assert.ok(score.composite <= 0.05,
+      `Expected composite <= 0.05 after maxRetentionDays, got ${score.composite}`);
+  });
+
   it("behaves identically when no category provided", () => {
     const engine = createDecayEngine({
       recencyHalfLifeDays: 14,

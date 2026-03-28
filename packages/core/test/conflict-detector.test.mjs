@@ -38,7 +38,20 @@ describe("detectFactKeyConflict", () => {
     );
     assert.equal(result.hasConflict, false);
     assert.equal(result.isDuplicate, true);
-    assert.equal(result.conflictWith, undefined);
+    assert.equal(result.conflictWith, "m1");
+  });
+
+  it("duplicate first but later entry conflicts → detects conflict", () => {
+    const result = detectFactKeyConflict(
+      { factKey: "pref:editor", text: "user prefers vim" },
+      [
+        { id: "m1", factKey: "pref:editor", text: "user prefers vim" },
+        { id: "m2", factKey: "pref:editor", text: "user prefers emacs" },
+      ],
+    );
+    assert.equal(result.hasConflict, true);
+    assert.equal(result.isDuplicate, false);
+    assert.equal(result.conflictWith, "m2");
   });
 
   it("undefined factKey → hasConflict: false", () => {

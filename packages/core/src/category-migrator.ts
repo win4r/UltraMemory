@@ -2,6 +2,7 @@ import { reverseMapLegacyCategory, buildSmartMetadata, stringifySmartMetadata } 
 import type { MemoryCategory } from "./memory-categories.js";
 
 interface EntryLike {
+  id?: string;
   text: string;
   category: string;
   metadata?: string;

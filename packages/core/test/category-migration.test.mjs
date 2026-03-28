@@ -63,4 +63,11 @@ describe("migrateCategoryForEntry", () => {
     const result = migrateCategoryForEntry(entry);
     assert.equal(result.memory_category, "patterns");
   });
+
+  it("handles malformed JSON metadata gracefully", () => {
+    const entry = { text: "user likes coffee", category: "preference", metadata: "not-json{" };
+    const result = migrateCategoryForEntry(entry);
+    assert.equal(result.changed, true);
+    assert.ok(result.memory_category, "should derive a category despite bad metadata");
+  });
 });

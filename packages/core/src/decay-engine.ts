@@ -209,7 +209,9 @@ export function createDecayEngine(
       const policy = retentionPolicies[category]!;
       const ageDays = (now - memory.createdAt) / MS_PER_DAY;
 
-      if (ageDays <= policy.minRetentionDays) {
+      if (policy.maxRetentionDays && ageDays > policy.maxRetentionDays) {
+        composite = Math.min(composite, 0.05); // Force near-stale
+      } else if (ageDays <= policy.minRetentionDays) {
         composite = Math.max(composite, 0.95);
       } else if (policy.decayMultiplier > 0 && policy.decayMultiplier !== 1.0) {
         // Recompute recency with modified half-life

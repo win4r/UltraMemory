@@ -108,6 +108,30 @@ describe("scoreBenchmarkResult", () => {
     assert.equal(score.contamination, 0, "no results => contamination=0");
   });
 
+  it("only scores top 5 results", () => {
+    const query = {
+      text: "What is the user's favorite color?",
+      expectedIds: ["m1"],
+      notExpectedIds: ["bad1"],
+    };
+    // m1 is at rank 6 — should not be found within top 5
+    const results = [
+      { id: "x1", score: 0.99 },
+      { id: "x2", score: 0.98 },
+      { id: "x3", score: 0.97 },
+      { id: "x4", score: 0.96 },
+      { id: "x5", score: 0.95 },
+      { id: "m1", score: 0.90 },
+      { id: "bad1", score: 0.80 },
+    ];
+
+    const score = scoreBenchmarkResult(query, results);
+
+    assert.equal(score.recall, 0, "m1 is beyond top 5 => recall=0");
+    assert.equal(score.contamination, 0, "bad1 is beyond top 5 => contamination=0");
+    assert.equal(score.precision, 0, "no expected in top 5 => precision=0");
+  });
+
   it("handles empty expectedIds", () => {
     const query = {
       text: "anything",
