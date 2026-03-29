@@ -90,6 +90,11 @@ export function createMcpToolDefinitions(opts?: { enableFeedbackTool?: boolean }
             type: "string",
             description: "Optional task context hint for highlight/synthesize modes",
           },
+          graph: {
+            type: "boolean",
+            description: "Enable KG graph traversal (PPR) for relationship-aware search. Use when query involves entity relationships (e.g. 'what tools does Alice use', 'who works with Bob'). Default: false.",
+            default: false,
+          },
         },
         required: ["query"],
         additionalProperties: false,

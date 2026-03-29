@@ -58,6 +58,12 @@ export * from "./llm-oauth.js";
 export * from "./admission-control.js";
 export * from "./admission-stats.js";
 
+// Knowledge Graph (Tier 4.1/4.2)
+export * from "./kg-store.js";
+export * from "./kg-extractor.js";
+export * from "./ppr-traversal.js";
+export * from "./query-entity-detector.js";
+
 // Access tracking
 export * from "./access-tracker.js";
 
