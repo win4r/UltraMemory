@@ -155,6 +155,31 @@ npx @ultramemory/server serve --mcp --http --port 1933
 | **Token-Based Chunking** | Replace character-count proxy with actual tokenizer for precise chunk boundaries. | `chunker.ts` | 🔲 |
 | **Python SDK** | Expand adoption beyond Node.js ecosystem. | new `packages/python/` | 🔲 |
 
+### v3.0 — Next: Prompt > Code
+
+> Lesson from v3 development: 20 commits of infrastructure code didn't move the benchmark.
+> Two lines of prompt change had more impact. Focus on prompt tuning and real-world validation.
+
+#### TODO (High Impact)
+
+| Priority | Task | Why | Effort |
+|----------|------|-----|--------|
+| **1** | **SmartExtractor extraction prompt tuning** | Controls what gets remembered. Current prompt is good but not validated against real multi-session agent conversations. Test with diverse user profiles (CJK, technical, casual). | Prompt only |
+| **2** | **SmartExtractor dedup prompt tuning** | The SKIP/CREATE/MERGE/SUPERSEDE decision determines memory quality over time. Too aggressive → loses info. Too permissive → duplicates accumulate. Needs A/B testing on real corpus. | Prompt only |
+| **3** | **Auto-recall governance filter calibration** | PR #9 found governance filters too strict — 49 memories, only 23 pass. Many valid memories filtered out before reaching the agent. Tune `state`/`memory_layer`/`suppressed_until_turn` thresholds. | Config tuning |
+| **4** | **Fix auto-link LanceDB bug** | `patchMetadata()` called immediately after `store()` deletes other rows. Root cause: LanceDB add-then-delete timing issue. Currently disabled via flag. | Code fix |
+| **5** | **LoCoMo QA prompt optimization** | Benchmark QA prompt is too conservative with thinking models (qwen3.5-flash says "unanswerable" 188/199 times). Not a memory bug, but masks retrieval quality in benchmarks. | Prompt only |
+
+#### NOT TODO (Low Impact, Learned the Hard Way)
+
+| Idea | Why Not |
+|------|---------|
+| More pipeline abstractions | IngestionPipeline added complexity, no quality improvement |
+| Contextual rendering layer | Term-overlap reranking is weaker than existing 5-channel RRF |
+| Heuristic auto-capture | Worse than existing LLM-based SmartExtractor |
+| Category migration infra | Internal cleanup, zero user-visible impact |
+| Metamemory bloom filter | False negative risk outweighs token savings |
+
 ### Benchmark Status
 
 | System | LoCoMo10 Acc@0.5 | Notes |
@@ -162,6 +187,7 @@ npx @ultramemory/server serve --mcp --http --port 1933
 | OpenClaw baseline | 35.65% | No memory plugin |
 | + OpenViking (mem off) | 52.08% | Filesystem paradigm |
 | **+ UltraMemory** | **50.0%** | 10-QA sample, hybrid vector+bm25, no reranking |
+| + UltraMemory v3 (GPT-4o) | 40.0% | 10-QA, vector-only, same retrieval quality, different LLM prompt |
 
 ---
 
