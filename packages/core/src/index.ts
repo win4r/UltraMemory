@@ -159,4 +159,6 @@ export {
   registerMemoryCompactTool,
   registerMemoryExplainRankTool,
   registerAllMemoryTools,
+  registerEphemeralTools,
+  isEphemeral,
 } from "./tools.js";

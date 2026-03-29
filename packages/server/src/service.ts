@@ -228,7 +228,10 @@ export interface ConsolidateParams {
 
 export interface ConsolidateResult {
   originalCount: number;
+  clustersFound: number;
   mergedCount: number;
+  relationsAdded: number;
+  conflictsDetected: Array<{ memoryA: string; memoryB: string; type: string }>;
   digestId: string | null;
   scope: string;
 }
@@ -868,7 +871,14 @@ export class MemoryService {
 
     return {
       originalCount: result.originalCount,
+      clustersFound: result.clustersFound,
       mergedCount: result.mergedCount,
+      relationsAdded: result.relationsAdded,
+      conflictsDetected: result.conflictsDetected.map((c) => ({
+        memoryA: c.memoryA,
+        memoryB: c.memoryB,
+        type: c.type,
+      })),
       digestId: null, // no LLM abstraction in P1-1
       scope: result.scope,
     };
