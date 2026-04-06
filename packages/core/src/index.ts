@@ -139,6 +139,9 @@ export { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-
 // Consolidation engine
 export { ConsolidationEngine, DEFAULT_CONSOLIDATION_CONFIG, type ConsolidationConfig, type ConsolidationResult, type ConflictEvent } from "./consolidation-engine.js";
 
+// Auto-consolidation (dual-threshold trigger)
+export { AutoConsolidation, DEFAULT_AUTO_CONSOLIDATION_CONFIG, type AutoConsolidationConfig, type AutoConsolidationResult, type AutoConsolidationSkipReason } from "./auto-consolidation.js";
+
 // Contextual recall rendering
 export { renderMemories, type RenderMode, type RenderResult, type RenderedMemory, type RenderableMemory } from "./context-renderer.js";
 
