@@ -98,6 +98,7 @@ export class IngestionPipeline {
   private dupThreshold: number;
   private conflictEnabled: boolean;
   private kgExtractor?: KGExtractor;
+  private boostConfig: RetroactiveBoostConfig | false;
 
   constructor(config: IngestionPipelineConfig) {
     this.store = config.store;
@@ -105,6 +106,7 @@ export class IngestionPipeline {
     this.dupThreshold = config.dupThreshold ?? 0.98;
     this.conflictEnabled = config.conflictEnabled ?? true;
     this.kgExtractor = config.kgExtractor;
+    this.boostConfig = config.retroactiveBoost ?? DEFAULT_RETROACTIVE_BOOST_CONFIG;
   }
 
   async ingest(input: IngestionInput): Promise<IngestionResult> {
@@ -341,7 +343,21 @@ export class IngestionPipeline {
     }
 
     // -----------------------------------------------------------------------
-    // 10. KG triple extraction (fire-and-forget, non-blocking)
+    // 10. Retroactive boost — lift related low-importance older entries
+    // -----------------------------------------------------------------------
+    if (this.boostConfig !== false && newId) {
+      retroactiveBoost(this.store, {
+        id: newId,
+        text: input.text,
+        vector: mainVector,
+        importance: input.importance,
+        scope: input.scope,
+        timestamp: Date.now(),
+      }, this.boostConfig).catch(() => {});
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. KG triple extraction (fire-and-forget, non-blocking)
     // -----------------------------------------------------------------------
     if (this.kgExtractor && newId) {
       this.kgExtractor.extractAndStore(input.text, newId, input.scope).catch(() => {});
