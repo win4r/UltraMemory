@@ -40,6 +40,7 @@ export async function startMcpServer(
           depth: (args as any).depth,
           render: (args as any).render,
           taskContext: (args as any).taskContext,
+          graph: (args as any).graph,
         });
         break;
       case "memory_update":

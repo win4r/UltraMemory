@@ -34,7 +34,7 @@ import {
   type MemoryProvenance,
   getDecayableFromEntry,
 } from "@ultramemory/core";
-import { FeedbackLearner, IngestionPipeline, reverseMapLegacyCategory } from "@ultramemory/core";
+import { FeedbackLearner, IngestionPipeline, reverseMapLegacyCategory, KGStore, createKGExtractor, isKGModeEnabled, type KGExtractor, createLlmClient } from "@ultramemory/core";
 import { resolveConfig, type UltraMemoryConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,8 @@ export interface RecallParams {
   render?: "verbatim" | "highlight" | "synthesize";
   /** Optional task context hint for highlight/synthesize rendering modes */
   taskContext?: string;
+  /** Enable KG graph traversal (PPR) for relationship-aware search. Default: false. */
+  graph?: boolean;
 }
 
 export interface ScoringTrace {
@@ -318,9 +320,35 @@ export class MemoryService {
 
     this.scopeManager = createScopeManager(this.config.scopes);
 
+    // KG triple extraction + graph traversal (gated by ULTRAMEMORY_KG_MODE=true)
+    let kgExtractor: KGExtractor | undefined;
+    if (isKGModeEnabled()) {
+      try {
+        const llmConfig = this.config.llm;
+        const llmApiKey = llmConfig?.apiKey || process.env.OPENAI_API_KEY;
+        if (llmApiKey) {
+          const llm = createLlmClient({
+            apiKey: llmApiKey,
+            model: llmConfig?.model || "gpt-4o-mini",
+            baseURL: llmConfig?.baseURL,
+            auth: llmConfig?.auth || "api-key",
+            oauthPath: llmConfig?.oauthPath,
+            oauthProvider: llmConfig?.oauthProvider,
+          });
+          const kgStore = new KGStore({ dbPath: this._store.dbPath });
+          kgExtractor = createKGExtractor({ llmClient: llm, kgStore });
+          this.retriever.setKGStore(kgStore);
+          console.error("[UltraMemory] KG triple extraction + graph traversal enabled");
+        }
+      } catch (err) {
+        console.error("[UltraMemory] KG init failed:", err);
+      }
+    }
+
     this.pipeline = new IngestionPipeline({
       store: this._store,
       embedder: this.embedder,
+      kgExtractor,
     });
 
     // Run migrations
@@ -443,6 +471,7 @@ export class MemoryService {
       scopeFilter,
       category,
       debug: params.debug,
+      graph: params.graph,
     });
 
     // Post-retrieval metadata updates (serialized to avoid read-modify-write races).

@@ -13,6 +13,10 @@ import {
 import { filterNoise } from "./noise-filter.js";
 import { filterInterference } from "./rif-filter.js";
 import type { DecayEngine, DecayableMemory } from "./decay-engine.js";
+import type { KGStore } from "./kg-store.js";
+import { isKGModeEnabled } from "./kg-extractor.js";
+import { detectEntities } from "./query-entity-detector.js";
+import { buildGraph, pprTraverse } from "./ppr-traversal.js";
 import type { TierManager } from "./tier-manager.js";
 import {
   getDecayableFromEntry,
@@ -124,6 +128,8 @@ export interface RetrievalContext {
   source?: "manual" | "auto-recall" | "cli";
   /** Enable debug scoring trace. When true, each result will have scoringTrace populated. Default: false. */
   debug?: boolean;
+  /** Enable KG graph traversal (PPR) as an additional retrieval signal. */
+  graph?: boolean;
 }
 
 export type QueryType = "question" | "temporal" | "lookup" | "general";
@@ -132,6 +138,7 @@ export interface RetrievalResult extends MemorySearchResult {
   sources: {
     vector?: { score: number; rank: number };
     bm25?: { score: number; rank: number };
+    graph?: { score: number; rank: number };
     fused?: { score: number };
     reranked?: { score: number };
   };
@@ -623,6 +630,7 @@ function fuseMultiChannelResults(
 export class MemoryRetriever {
   private accessTracker: AccessTracker | null = null;
   private tierManager: TierManager | null = null;
+  private kgStore?: KGStore;
 
   constructor(
     private store: MemoryStore,
@@ -635,6 +643,11 @@ export class MemoryRetriever {
     this.accessTracker = tracker;
   }
 
+  /** Attach a KGStore to enable graph-based retrieval (PPR). */
+  setKGStore(kgStore: KGStore): void {
+    this.kgStore = kgStore;
+  }
+
   private filterActiveResults<T extends MemorySearchResult>(results: T[]): T[] {
     return results.filter((result) =>
       isMemoryActiveAt(parseSmartMetadata(result.entry.metadata, result.entry)),
@@ -642,7 +655,7 @@ export class MemoryRetriever {
   }
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
-    const { query, limit, scopeFilter, category, source, debug } = context;
+    const { query, limit, scopeFilter, category, source, debug, graph } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
     // ── Query understanding layer (lightweight heuristic) ──
@@ -686,6 +699,7 @@ export class MemoryRetriever {
         category,
         effectiveConfig,
         debug,
+        graph,
       );
     }
 
@@ -877,6 +891,7 @@ export class MemoryRetriever {
     category?: string,
     cfg?: RetrievalConfig,
     debug?: boolean,
+    graph?: boolean,
   ): Promise<RetrievalResult[]> {
     const c = cfg ?? this.config;
     const candidatePoolSize = Math.max(
@@ -946,6 +961,27 @@ export class MemoryRetriever {
       }
     }
 
+    // KG graph traversal (PPR) — boost existing results or add graph-only results
+    if (graph && isKGModeEnabled() && this.kgStore) {
+      try {
+        const scope = scopeFilter?.[0];
+        const graphResults = await this.runPPRSearch(query, scope);
+        for (const gr of graphResults) {
+          const existing = fusionMap.get(gr.entry.id);
+          if (existing) {
+            // Boost existing result by up to 20% of graph score
+            existing.score = clamp01(existing.score + gr.score * 0.20, 0.1);
+            existing.sources.graph = gr.sources.graph;
+          } else {
+            // Graph-only result: use graph score directly
+            fusionMap.set(gr.entry.id, gr);
+          }
+        }
+      } catch (err) {
+        console.error(`[PPR] graph traversal failed, continuing without: ${String(err)}`);
+      }
+    }
+
     // Convert fusion map to sorted array
     const fusedResults = Array.from(fusionMap.values()).sort((a, b) => b.score - a.score);
 
@@ -1011,6 +1047,69 @@ export class MemoryRetriever {
     const deduplicated = this.applyMMR(rifFiltered, limit, c.mmrLambda ?? 0.7, debug);
 
     return deduplicated.slice(0, limit);
+  }
+
+  /**
+   * Run PPR graph traversal: detect entities -> BFS neighborhood -> PPR -> map to MemoryEntry.
+   * Returns RetrievalResult[] with graph source scores.
+   */
+  private async runPPRSearch(
+    query: string,
+    scope?: string,
+  ): Promise<RetrievalResult[]> {
+    if (!this.kgStore) return [];
+
+    const detected = await detectEntities(query, this.kgStore, scope);
+    if (detected.entities.length === 0) return [];
+
+    // BFS neighborhood from KG
+    const hopLimit = detected.isMultiHop ? 3 : 2;
+    const neighborhood = await this.kgStore.getNeighborhood(detected.entities, hopLimit, scope);
+    if (neighborhood.length === 0) return [];
+
+    // Run PPR
+    const graph = buildGraph(neighborhood);
+    const pprResults = pprTraverse(graph, detected.entities, { hopLimit, topK: 20 });
+    if (pprResults.length === 0) return [];
+
+    // Map PPR entity scores back to source memory entries
+    const entityScoreMap = new Map(pprResults.map(r => [r.entity, r.score]));
+    const memoryScoreMap = new Map<string, number>();
+
+    for (const nr of neighborhood) {
+      for (const triple of nr.triples) {
+        const subjectScore = entityScoreMap.get(triple.subject) ?? 0;
+        const objectScore = entityScoreMap.get(triple.object) ?? 0;
+        const tripleScore = Math.max(subjectScore, objectScore) * triple.confidence;
+
+        if (tripleScore > 0 && triple.source_memory_id) {
+          const existing = memoryScoreMap.get(triple.source_memory_id) ?? 0;
+          memoryScoreMap.set(triple.source_memory_id, Math.max(existing, tripleScore));
+        }
+      }
+    }
+
+    // Fetch memory entries for the top scored memories
+    const sortedMemories = [...memoryScoreMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20);
+
+    const results: RetrievalResult[] = [];
+    let rank = 0;
+    for (const [memId, score] of sortedMemories) {
+      const entry = await this.store.getById(memId);
+      if (!entry) continue;
+      rank++;
+      results.push({
+        entry,
+        score,
+        sources: {
+          graph: { score, rank },
+        },
+      });
+    }
+
+    return results;
   }
 
   private async runVectorSearch(

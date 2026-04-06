@@ -17,6 +17,7 @@ import {
 } from "./smart-metadata.js";
 import { detectFactKeyConflict } from "./conflict-detector.js";
 import type { MemoryCategory } from "./memory-categories.js";
+import type { KGExtractor } from "./kg-extractor.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +32,8 @@ export interface IngestionPipelineConfig {
   dupThreshold?: number;
   /** Enable fact-key conflict detection (default true) */
   conflictEnabled?: boolean;
+  /** Optional KG extractor for triple extraction on ingest (gated by ULTRAMEMORY_KG_MODE) */
+  kgExtractor?: KGExtractor;
 }
 
 export interface IngestionInput {
@@ -94,12 +97,14 @@ export class IngestionPipeline {
   private embedder: any;
   private dupThreshold: number;
   private conflictEnabled: boolean;
+  private kgExtractor?: KGExtractor;
 
   constructor(config: IngestionPipelineConfig) {
     this.store = config.store;
     this.embedder = config.embedder;
     this.dupThreshold = config.dupThreshold ?? 0.98;
     this.conflictEnabled = config.conflictEnabled ?? true;
+    this.kgExtractor = config.kgExtractor;
   }
 
   async ingest(input: IngestionInput): Promise<IngestionResult> {
@@ -333,6 +338,13 @@ export class IngestionPipeline {
           // Best-effort relation linking
         }
       }
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. KG triple extraction (fire-and-forget, non-blocking)
+    // -----------------------------------------------------------------------
+    if (this.kgExtractor && newId) {
+      this.kgExtractor.extractAndStore(input.text, newId, input.scope).catch(() => {});
     }
 
     // -----------------------------------------------------------------------
