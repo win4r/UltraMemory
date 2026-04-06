@@ -168,7 +168,7 @@ Se você está usando a integração Telegram do OpenClaw, a maneira mais fácil
 Envie esta mensagem:
 
 ```text
-Help me connect this memory plugin with the most user-friendly configuration: https://github.com/CortexReach/memory-lancedb-pro
+Help me connect this memory plugin with the most user-friendly configuration: https://github.com/win4r/UltraMemory
 
 Requirements:
 1. Set it as the only active memory plugin
@@ -219,7 +219,7 @@ Presets de provedores integrados: **Jina / DashScope / SiliconFlow / OpenAI / Ol
 
 ### Claude Code / OpenClaw Skill — Configuração guiada por IA
 
-> **[CortexReach/memory-lancedb-pro-skill](https://github.com/CortexReach/memory-lancedb-pro-skill)**
+> **[win4r/UltraMemory-skill](https://github.com/win4r/UltraMemory-skill)**
 
 Instale esta Skill e seu agente de IA (Claude Code ou OpenClaw) ganha conhecimento profundo de todas as funcionalidades do memory-lancedb-pro. Basta dizer **"me ajude a ativar a melhor configuração"** e obtenha:
 
@@ -230,12 +230,12 @@ Instale esta Skill e seu agente de IA (Claude Code ou OpenClaw) ganha conhecimen
 
 **Instalação para Claude Code:**
 ```bash
-git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.claude/skills/memory-lancedb-pro
+git clone https://github.com/win4r/UltraMemory-skill.git ~/.claude/skills/memory-lancedb-pro
 ```
 
 **Instalação para OpenClaw:**
 ```bash
-git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.openclaw/workspace/skills/memory-lancedb-pro-skill
+git clone https://github.com/win4r/UltraMemory-skill.git ~/.openclaw/workspace/skills/memory-lancedb-pro-skill
 ```
 
 ---
@@ -722,7 +722,7 @@ No LanceDB 0.26+, algumas colunas numéricas podem ser retornadas como `BigInt`.
 | **Pontuação do ciclo de vida** | Decaimento Weibull integrado à busca — memórias frequentes e importantes ficam mais bem ranqueadas. |
 | **Gerenciamento de níveis** | Sistema de três níveis (Core → Working → Peripheral) com promoção/rebaixamento automático. |
 
-Feedback: [GitHub Issues](https://github.com/CortexReach/memory-lancedb-pro/issues) · Reverter: `npm i memory-lancedb-pro@latest`
+Feedback: [GitHub Issues](https://github.com/win4r/UltraMemory/issues) · Reverter: `npm i memory-lancedb-pro@latest`
 
 ---
 
@@ -735,32 +735,6 @@ Feedback: [GitHub Issues](https://github.com/CortexReach/memory-lancedb-pro/issu
 | `@sinclair/typebox` 0.34.48 | Definições de tipo JSON Schema |
 
 ---
-
-## Contributors
-
-<p>
-<a href="https://github.com/win4r"><img src="https://avatars.githubusercontent.com/u/42172631?v=4" width="48" height="48" alt="@win4r" /></a>
-<a href="https://github.com/kctony"><img src="https://avatars.githubusercontent.com/u/1731141?v=4" width="48" height="48" alt="@kctony" /></a>
-<a href="https://github.com/Akatsuki-Ryu"><img src="https://avatars.githubusercontent.com/u/8062209?v=4" width="48" height="48" alt="@Akatsuki-Ryu" /></a>
-<a href="https://github.com/JasonSuz"><img src="https://avatars.githubusercontent.com/u/612256?v=4" width="48" height="48" alt="@JasonSuz" /></a>
-<a href="https://github.com/Minidoracat"><img src="https://avatars.githubusercontent.com/u/11269639?v=4" width="48" height="48" alt="@Minidoracat" /></a>
-<a href="https://github.com/furedericca-lab"><img src="https://avatars.githubusercontent.com/u/263020793?v=4" width="48" height="48" alt="@furedericca-lab" /></a>
-<a href="https://github.com/joe2643"><img src="https://avatars.githubusercontent.com/u/19421931?v=4" width="48" height="48" alt="@joe2643" /></a>
-<a href="https://github.com/AliceLJY"><img src="https://avatars.githubusercontent.com/u/136287420?v=4" width="48" height="48" alt="@AliceLJY" /></a>
-<a href="https://github.com/chenjiyong"><img src="https://avatars.githubusercontent.com/u/8199522?v=4" width="48" height="48" alt="@chenjiyong" /></a>
-</p>
-
-Full list: [Contributors](https://github.com/CortexReach/memory-lancedb-pro/graphs/contributors)
-
-## Star History
-
-<a href="https://star-history.com/#CortexReach/memory-lancedb-pro&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CortexReach/memory-lancedb-pro&type=Date&theme=dark&transparent=true" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=CortexReach/memory-lancedb-pro&type=Date&transparent=true" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CortexReach/memory-lancedb-pro&type=Date&transparent=true" />
-  </picture>
-</a>
 
 ## Licença
 

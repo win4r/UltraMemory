@@ -340,7 +340,7 @@ If you are using OpenClaw's Telegram integration, the easiest way is to send an 
 Send this message:
 
 ```text
-Help me connect this memory plugin with the most user-friendly configuration: https://github.com/CortexReach/memory-lancedb-pro
+Help me connect this memory plugin with the most user-friendly configuration: https://github.com/win4r/UltraMemory
 
 Requirements:
 1. Set it as the only active memory plugin
@@ -391,7 +391,7 @@ Built-in provider presets: **Jina / DashScope / SiliconFlow / OpenAI / Ollama**,
 
 ### Claude Code / OpenClaw Skill — AI-Guided Configuration
 
-> **[CortexReach/memory-lancedb-pro-skill](https://github.com/CortexReach/memory-lancedb-pro-skill)**
+> **[win4r/UltraMemory-skill](https://github.com/win4r/UltraMemory-skill)**
 
 Install this skill and your AI agent (Claude Code or OpenClaw) gains deep knowledge of every feature in memory-lancedb-pro. Just say **"help me enable the best config"** and get:
 
@@ -402,12 +402,12 @@ Install this skill and your AI agent (Claude Code or OpenClaw) gains deep knowle
 
 **Install for Claude Code:**
 ```bash
-git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.claude/skills/memory-lancedb-pro
+git clone https://github.com/win4r/UltraMemory-skill.git ~/.claude/skills/memory-lancedb-pro
 ```
 
 **Install for OpenClaw:**
 ```bash
-git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.openclaw/workspace/skills/memory-lancedb-pro-skill
+git clone https://github.com/win4r/UltraMemory-skill.git ~/.openclaw/workspace/skills/memory-lancedb-pro-skill
 ```
 
 ---
@@ -984,7 +984,7 @@ openclaw doctor --fix # resolve any stale config after upgrade
 | **Lifecycle Scoring** | Weibull decay integrated into retrieval — high-frequency and high-importance memories rank higher. |
 | **Tier Management** | Three-tier system (Core → Working → Peripheral) with automatic promotion/demotion. |
 
-Feedback: [GitHub Issues](https://github.com/CortexReach/memory-lancedb-pro/issues) · Revert: `npm i memory-lancedb-pro@latest`
+Feedback: [GitHub Issues](https://github.com/win4r/UltraMemory/issues) · Revert: `npm i memory-lancedb-pro@latest`
 
 ---
 
