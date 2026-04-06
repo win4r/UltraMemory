@@ -185,7 +185,8 @@ export function getAdmittedDecisionTimestamp(
 export function getObservedAdmissionCategory(
   entry: AdmissionAuditedMemoryLike,
 ): string {
-  return parseSmartMetadata(entry.metadata, entry).memory_category || entry.category || "patterns";
+  // entry.category is a free-form string; cast to satisfy EntryLike's LegacyStoreCategory
+  return parseSmartMetadata(entry.metadata, entry as Parameters<typeof parseSmartMetadata>[1]).memory_category || entry.category || "patterns";
 }
 
 export function buildAdmissionCategoryBreakdown(

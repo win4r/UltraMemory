@@ -23,6 +23,7 @@ export interface ReflectionItemMetadata {
   baseWeight: number;
   quality: number;
   sourceReflectionPath?: string;
+  [key: string]: unknown;
 }
 
 export interface ReflectionItemPayload {

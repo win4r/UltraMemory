@@ -60,6 +60,7 @@ interface EnrichedMetadata {
   last_accessed_at: number;
   upgraded_from: string; // original 5-category
   upgraded_at: number;   // timestamp of upgrade
+  [key: string]: unknown;
 }
 
 // ============================================================================

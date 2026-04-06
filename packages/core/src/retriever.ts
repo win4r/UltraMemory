@@ -190,11 +190,11 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
  * If a result's category has an entry in `thresholds`, that value is used;
  * otherwise `hardMinScore` is the fallback.
  */
-export function applyCategoryThreshold(
-  results: Array<{ entry: { category: string }; score: number }>,
+export function applyCategoryThreshold<T extends { entry: { category: string }; score: number }>(
+  results: T[],
   thresholds: Record<string, number>,
   hardMinScore: number,
-): Array<{ entry: { category: string }; score: number }> {
+): T[] {
   return results.filter((r) => {
     const threshold = thresholds[r.entry.category] ?? hardMinScore;
     return r.score >= threshold;
@@ -260,12 +260,13 @@ function applyRelationBoostWithTrace<T extends { score: number; scoringTrace?: i
   candidates: Array<T & { entry: { id: string; metadata?: string } }>,
   debug?: boolean,
 ): typeof candidates {
+  type C = typeof candidates;
   if (!debug) {
-    return applyRelationBoost(candidates);
+    return applyRelationBoost(candidates) as C;
   }
   // Snapshot pre-boost scores
   const preBoost = new Map(candidates.map((c) => [c.entry.id, c.score]));
-  const boosted = applyRelationBoost(candidates);
+  const boosted = applyRelationBoost(candidates) as C;
   for (const c of boosted) {
     if (c.scoringTrace) {
       const delta = c.score - (preBoost.get(c.entry.id) ?? c.score);
