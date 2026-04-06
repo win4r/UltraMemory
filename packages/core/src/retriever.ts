@@ -11,6 +11,7 @@ import {
   parseAccessMetadata,
 } from "./access-tracker.js";
 import { filterNoise } from "./noise-filter.js";
+import { filterInterference } from "./rif-filter.js";
 import type { DecayEngine, DecayableMemory } from "./decay-engine.js";
 import type { TierManager } from "./tier-manager.js";
 import {
@@ -94,6 +95,12 @@ export interface RetrievalConfig {
   rrfK: number;
   /** MMR lambda (default: 0.7, range 0-1). Higher = more relevance, lower = more diversity. */
   mmrLambda?: number;
+  /** Enable Retrieval Interference Filter (RIF) — demotes near-duplicate weak results. Default: false. */
+  enableRIF?: boolean;
+  /** RIF cosine similarity threshold for "near-duplicate" (default: 0.85). */
+  rifThreshold?: number;
+  /** RIF score ratio: demote if score < ratio * stronger result's score (default: 0.80). */
+  rifScoreRatio?: number;
   /**
    * Per-category score thresholds. When a result's category matches a key,
    * that threshold is used instead of hardMinScore. Unknown categories fall
@@ -772,8 +779,13 @@ export class MemoryRetriever {
       ? filterNoise(lifecycleRanked, r => r.entry.text)
       : lifecycleRanked;
 
+    // RIF: demote near-duplicate weak results to improve diversity
+    const rifFiltered = c.enableRIF
+      ? filterInterference(denoised, c.rifThreshold ?? 0.85, c.rifScoreRatio ?? 0.80)
+      : denoised;
+
     // MMR deduplication: avoid top-k filled with near-identical memories
-    const deduplicated = this.applyMMR(denoised, limit, c.mmrLambda ?? 0.7, debug);
+    const deduplicated = this.applyMMR(rifFiltered, limit, c.mmrLambda ?? 0.7, debug);
 
     return deduplicated.slice(0, limit);
   }
@@ -850,7 +862,11 @@ export class MemoryRetriever {
       ? filterNoise(lifecycleRanked, r => r.entry.text)
       : lifecycleRanked;
 
-    const deduplicated = this.applyMMR(denoised, limit, c.mmrLambda ?? 0.7, debug);
+    const rifFiltered = c.enableRIF
+      ? filterInterference(denoised, c.rifThreshold ?? 0.85, c.rifScoreRatio ?? 0.80)
+      : denoised;
+
+    const deduplicated = this.applyMMR(rifFiltered, limit, c.mmrLambda ?? 0.7, debug);
     return deduplicated.slice(0, limit);
   }
 
@@ -986,8 +1002,13 @@ export class MemoryRetriever {
       ? filterNoise(lifecycleRanked, r => r.entry.text)
       : lifecycleRanked;
 
+    // RIF: demote near-duplicate weak results to improve diversity
+    const rifFiltered = c.enableRIF
+      ? filterInterference(denoised, c.rifThreshold ?? 0.85, c.rifScoreRatio ?? 0.80)
+      : denoised;
+
     // MMR deduplication: avoid top-k filled with near-identical memories
-    const deduplicated = this.applyMMR(denoised, limit, c.mmrLambda ?? 0.7, debug);
+    const deduplicated = this.applyMMR(rifFiltered, limit, c.mmrLambda ?? 0.7, debug);
 
     return deduplicated.slice(0, limit);
   }
