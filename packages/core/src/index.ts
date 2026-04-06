@@ -32,6 +32,7 @@ export * from "./smart-metadata.js";
 // Decay & tier management
 export * from "./decay-engine.js";
 export * from "./tier-manager.js";
+export * from "./homeostasis.js";
 
 // Memory categories
 export * from "./memory-categories.js";
