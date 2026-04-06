@@ -18,6 +18,7 @@ import {
 import { detectFactKeyConflict } from "./conflict-detector.js";
 import type { MemoryCategory } from "./memory-categories.js";
 import type { KGExtractor } from "./kg-extractor.js";
+import { retroactiveBoost, DEFAULT_RETROACTIVE_BOOST_CONFIG, type RetroactiveBoostConfig } from "./retroactive-boost.js";
 
 // ---------------------------------------------------------------------------
 // Types
