@@ -127,6 +127,9 @@ export * from "./feedback-learner.js";
 // Entity resolution
 export * from "./entity-resolver.js";
 
+// Multi-hop retrieval (optional two-round search)
+export * from "./multi-hop-retriever.js";
+
 // Deterministic IDs
 export * from "./utils/deterministic-id.js";
 
