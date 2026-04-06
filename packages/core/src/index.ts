@@ -15,6 +15,10 @@ export * from "./embedder.js";
 // Retrieval
 export * from "./retriever.js";
 
+// Temporal query parsing
+export { parseTemporalQuery, matchesTemporalFilter, applyTemporalFilter } from "./temporal-parser.js";
+export type { TemporalFilter } from "./temporal-parser.js";
+
 // Scopes
 export * from "./scopes.js";
 
