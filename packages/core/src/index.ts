@@ -29,6 +29,9 @@ export * from "./extraction-prompts.js";
 // Smart metadata
 export * from "./smart-metadata.js";
 
+// Confidence tracking
+export * from "./confidence-tracker.js";
+
 // Decay & tier management
 export * from "./decay-engine.js";
 export * from "./tier-manager.js";
