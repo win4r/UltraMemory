@@ -133,6 +133,9 @@ export * from "./utils/deterministic-id.js";
 // Ingestion pipeline
 export { IngestionPipeline, type IngestionInput, type IngestionResult, type IngestionAction } from "./ingestion-pipeline.js";
 
+// Retroactive boost
+export { retroactiveBoost, DEFAULT_RETROACTIVE_BOOST_CONFIG, type RetroactiveBoostConfig, type BoostResult } from "./retroactive-boost.js";
+
 // Conflict detection
 export { detectFactKeyConflict, detectHeuristicContradiction } from "./conflict-detector.js";
 
