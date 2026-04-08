@@ -33,6 +33,9 @@ export * from "./smart-metadata.js";
 export * from "./decay-engine.js";
 export * from "./tier-manager.js";
 
+// Cascade forget
+export * from "./cascade-forget.js";
+
 // Memory categories
 export * from "./memory-categories.js";
 

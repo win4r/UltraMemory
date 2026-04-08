@@ -28,6 +28,7 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
+import { cascadeForget, type CascadeForgetResult } from "./cascade-forget.js";
 
 // ============================================================================
 // Types
@@ -920,13 +921,23 @@ export function registerMemoryForgetTool(
           }
 
           if (memoryId) {
+            // Fetch entry before deletion so we have its vector for cascade
+            const entryBeforeDelete = await context.store.getById(memoryId, scopeFilter);
             const deleted = await context.store.delete(memoryId, scopeFilter);
             if (deleted) {
+              // Cascade-demote related memories
+              let cascade: CascadeForgetResult = { demotedCount: 0, demotedIds: [] };
+              if (entryBeforeDelete) {
+                cascade = await cascadeForget(context.store, entryBeforeDelete);
+              }
+              const cascadeNote = cascade.demotedCount > 0
+                ? ` Cascade-demoted ${cascade.demotedCount} related memories.`
+                : "";
               return {
                 content: [
-                  { type: "text", text: `Memory ${memoryId} forgotten.` },
+                  { type: "text", text: `Memory ${memoryId} forgotten.${cascadeNote}` },
                 ],
-                details: { action: "deleted", id: memoryId },
+                details: { action: "deleted", id: memoryId, cascade },
               };
             } else {
               return {
@@ -958,19 +969,25 @@ export function registerMemoryForgetTool(
             }
 
             if (results.length === 1 && results[0].score > 0.9) {
+              const matchEntry = results[0].entry;
               const deleted = await context.store.delete(
-                results[0].entry.id,
+                matchEntry.id,
                 scopeFilter,
               );
               if (deleted) {
+                // Cascade-demote related memories
+                const cascade = await cascadeForget(context.store, matchEntry);
+                const cascadeNote = cascade.demotedCount > 0
+                  ? ` Cascade-demoted ${cascade.demotedCount} related memories.`
+                  : "";
                 return {
                   content: [
                     {
                       type: "text",
-                      text: `Forgotten: "${results[0].entry.text}"`,
+                      text: `Forgotten: "${matchEntry.text}"${cascadeNote}`,
                     },
                   ],
-                  details: { action: "deleted", id: results[0].entry.id },
+                  details: { action: "deleted", id: matchEntry.id, cascade },
                 };
               }
             }
