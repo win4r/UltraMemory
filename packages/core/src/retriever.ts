@@ -12,6 +12,7 @@ import {
 } from "./access-tracker.js";
 import { filterNoise } from "./noise-filter.js";
 import { filterInterference } from "./rif-filter.js";
+import { extractTopicTag } from "./topic-tag.js";
 import type { DecayEngine, DecayableMemory } from "./decay-engine.js";
 import type { KGStore } from "./kg-store.js";
 import { isKGModeEnabled } from "./kg-extractor.js";
@@ -131,6 +132,8 @@ export interface RetrievalContext {
   debug?: boolean;
   /** Enable KG graph traversal (PPR) as an additional retrieval signal. */
   graph?: boolean;
+  /** Filter results by topic tag stored in metadata (e.g. "auth", "deploy"). */
+  topicTag?: string;
 }
 
 export type QueryType = "question" | "temporal" | "lookup" | "general";
@@ -712,6 +715,15 @@ export class MemoryRetriever {
     // ── Apply temporal post-filter ──
     results = applyTemporalFilter(results, temporalFilter);
     if (results.length > safeLimit) results = results.slice(0, safeLimit);
+
+    // ── Topic tag post-filter ──
+    if (context.topicTag && results.length > 0) {
+      const tag = context.topicTag.toLowerCase();
+      results = results.filter((r) => {
+        const entryTag = extractTopicTag(r.entry.metadata);
+        return entryTag?.toLowerCase() === tag;
+      });
+    }
 
     // Stamp queryType on every result and finalize scoringTrace
     results = results.map((r) => {

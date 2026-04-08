@@ -80,6 +80,8 @@ export interface SmartMemoryMetadata {
   provenance?: MemoryProvenance;
   feedback_weight: number;  // 0.0-1.0, default 0.5
   trust_level: "source" | "generated";
+  /** Intra-scope topic partition (e.g. "auth", "deploy", "testing"). Auto-detected or explicit. */
+  topic_tag?: string;
   [key: string]: unknown;
 }
 
@@ -355,6 +357,7 @@ export function parseSmartMetadata(
       ? Math.max(0, Math.min(1, parsed.feedback_weight))
       : 0.5,
     trust_level: normalizeTrustLevel(parsed.trust_level),
+    topic_tag: typeof parsed.topic_tag === "string" ? parsed.topic_tag : undefined,
   };
 
   return normalized;

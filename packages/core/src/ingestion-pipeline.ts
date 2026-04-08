@@ -6,6 +6,7 @@
  */
 
 import { isNoise } from "./noise-filter.js";
+import { detectTopicTag } from "./topic-tag.js";
 import {
   deriveFactKey,
   buildSmartMetadata,
@@ -203,6 +204,10 @@ export class IngestionPipeline {
       source === "consolidation" ? "generated" : "source";
 
     const now = Date.now();
+    // Topic tag: use explicit value from input, or auto-detect from text
+    const topicTag = (input as Record<string, unknown>).topic_tag as string | undefined
+      ?? detectTopicTag(input.text);
+
     const smartMeta = buildSmartMetadata(
       { text: input.text },
       {
@@ -217,6 +222,7 @@ export class IngestionPipeline {
         fact_key: factKey,
         ...(conflictWith ? { supersedes: conflictWith } : {}),
         ...(input.provenance ? { provenance: input.provenance } : {}),
+        ...(topicTag ? { topic_tag: topicTag } : {}),
       },
     );
 

@@ -19,6 +19,9 @@ export * from "./retriever.js";
 export { parseTemporalQuery, matchesTemporalFilter, applyTemporalFilter } from "./temporal-parser.js";
 export type { TemporalFilter } from "./temporal-parser.js";
 
+// Topic tag detection
+export { detectTopicTag, extractTopicTag } from "./topic-tag.js";
+
 // Scopes
 export * from "./scopes.js";
 
