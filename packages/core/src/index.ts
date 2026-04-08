@@ -77,6 +77,9 @@ export * from "./access-tracker.js";
 // Adaptive retrieval
 export * from "./adaptive-retrieval.js";
 
+// Recall governor (post-retrieval governance layer)
+export * from "./recall-governor.js";
+
 // Reflection system
 export * from "./reflection-store.js";
 // reflection-slices re-declares ReflectionMappedKind (canonical in reflection-mapped-metadata)
@@ -133,6 +136,9 @@ export * from "./feedback-learner.js";
 
 // Entity resolution
 export * from "./entity-resolver.js";
+
+// Multi-hop retrieval (optional two-round search)
+export * from "./multi-hop-retriever.js";
 
 // Deterministic IDs
 export * from "./utils/deterministic-id.js";
