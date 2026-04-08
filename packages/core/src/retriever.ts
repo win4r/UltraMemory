@@ -25,6 +25,7 @@ import {
   toLifecycleMemory,
   type ScoringTrace,
 } from "./smart-metadata.js";
+import { parseTemporalQuery, applyTemporalFilter } from "./temporal-parser.js";
 
 // ============================================================================
 // Types & Configuration
@@ -659,11 +660,15 @@ export class MemoryRetriever {
     const { query, limit, scopeFilter, category, source, debug, graph } = context;
     const safeLimit = clampInt(limit, 1, 20);
 
+    // ── Temporal filter extraction ──
+    const temporalFilter = parseTemporalQuery(query);
+    const searchQuery = temporalFilter.anchor ? temporalFilter.cleanedQuery : query;
+
     // ── Query understanding layer (lightweight heuristic) ──
-    const queryType = classifyQuery(query);
+    const queryType = classifyQuery(searchQuery);
     const effectiveQuery = queryType === "temporal"
-      ? expandTemporalQuery(query)
-      : query;
+      ? expandTemporalQuery(searchQuery)
+      : searchQuery;
 
     // Apply query-type-aware weight adjustments into a LOCAL copy so
     // concurrent retrieve() calls never corrupt each other's config.
@@ -703,6 +708,10 @@ export class MemoryRetriever {
         graph,
       );
     }
+
+    // ── Apply temporal post-filter ──
+    results = applyTemporalFilter(results, temporalFilter);
+    if (results.length > safeLimit) results = results.slice(0, safeLimit);
 
     // Stamp queryType on every result and finalize scoringTrace
     results = results.map((r) => {
