@@ -35,6 +35,7 @@ export * from "./confidence-tracker.js";
 // Decay & tier management
 export * from "./decay-engine.js";
 export * from "./tier-manager.js";
+export * from "./homeostasis.js";
 
 // Cascade forget
 export * from "./cascade-forget.js";
