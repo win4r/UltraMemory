@@ -122,6 +122,9 @@ export * from "./reflection-retry.js";
 // Session recovery
 export * from "./session-recovery.js";
 
+// Session distiller (three-layer conversation compression)
+export * from "./session-distiller.js";
+
 // Identity & preferences
 export * from "./identity-addressing.js";
 export * from "./preference-slots.js";
