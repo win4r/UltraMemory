@@ -19,6 +19,7 @@ export interface ReflectionEventMetadata {
   usedFallback: boolean;
   errorSignals: string[];
   sourceReflectionPath?: string;
+  [key: string]: unknown;
 }
 
 export interface ReflectionEventPayload {

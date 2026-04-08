@@ -25,7 +25,7 @@ export function migrateCategoryForEntry(entry: EntryLike): MigrationResult {
   }
 
   if (parsed.memory_category && typeof parsed.memory_category === "string") {
-    return { memory_category: parsed.memory_category, changed: false };
+    return { memory_category: parsed.memory_category as MemoryCategory, changed: false };
   }
 
   const derived = reverseMapLegacyCategory(entry.category as any, entry.text);
