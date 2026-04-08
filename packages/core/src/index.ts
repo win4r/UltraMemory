@@ -19,6 +19,10 @@ export * from "./retriever.js";
 export { parseTemporalQuery, matchesTemporalFilter, applyTemporalFilter } from "./temporal-parser.js";
 export type { TemporalFilter } from "./temporal-parser.js";
 
+// Conversation import
+export { detectFormat, normalizeConversation, normalizeClaudeCode, normalizeClaudeAi, normalizeChatGPT, normalizeSlack, normalizePlaintext, importConversationFile, ingestNormalizedMessages } from "./conversation-importer.js";
+export type { NormalizedMessage, ConversationFormat, ImportResult, IngestFn } from "./conversation-importer.js";
+
 // Scopes
 export * from "./scopes.js";
 
