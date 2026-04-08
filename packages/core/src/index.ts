@@ -23,6 +23,9 @@ export type { TemporalFilter } from "./temporal-parser.js";
 export { detectFormat, normalizeConversation, normalizeClaudeCode, normalizeClaudeAi, normalizeChatGPT, normalizeSlack, normalizePlaintext, importConversationFile, ingestNormalizedMessages } from "./conversation-importer.js";
 export type { NormalizedMessage, ConversationFormat, ImportResult, IngestFn } from "./conversation-importer.js";
 
+// Topic tag detection
+export { detectTopicTag, extractTopicTag } from "./topic-tag.js";
+
 // Scopes
 export * from "./scopes.js";
 
