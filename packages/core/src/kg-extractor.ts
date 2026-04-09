@@ -6,6 +6,7 @@
 
 import type { LlmClient } from "./llm-client.js";
 import type { KGStore } from "./kg-store.js";
+import { getLocalizedKgPrompt } from "./language-hook.js";
 
 // ============================================================================
 // Types
@@ -90,8 +91,20 @@ export function normalizePredicate(raw: string): string {
 
 const KG_EXTRACT_SYSTEM = `You are a knowledge graph extraction assistant. Extract (subject, predicate, object) triples from text. Respond with valid JSON only.`;
 
-function buildKGExtractionPrompt(text: string): string {
-  return `Extract knowledge graph triples from the text below.
+function buildKGExtractionPrompt(text: string): { system: string; user: string } {
+  // Use babel-memory's language-aware prompt when available
+  const localized = getLocalizedKgPrompt(text);
+  if (localized) {
+    return {
+      system: localized.system,
+      user: localized.userTemplate.replace("{text}", text),
+    };
+  }
+
+  // Built-in English default
+  return {
+    system: KG_EXTRACT_SYSTEM,
+    user: `Extract knowledge graph triples from the text below.
 
 Rules:
 - Extract relationships between named entities, concepts, tools, people, projects
@@ -110,7 +123,8 @@ Text: "RecallNest depends on LanceDB for vector storage and uses OpenAI for embe
 
 Now extract triples from:
 
-${text}`;
+${text}`,
+  };
 }
 
 // ============================================================================
@@ -167,7 +181,7 @@ export class KGExtractor {
     let response: LlmExtractionResponse | null = null;
     try {
       response = await this.llm.completeJson<LlmExtractionResponse>(
-        KG_EXTRACT_SYSTEM + "\n\n" + prompt,
+        prompt.system + "\n\n" + prompt.user,
         "kg-extraction",
       );
     } catch (err) {

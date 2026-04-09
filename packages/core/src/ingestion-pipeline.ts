@@ -20,6 +20,7 @@ import { detectFactKeyConflict } from "./conflict-detector.js";
 import type { MemoryCategory } from "./memory-categories.js";
 import type { KGExtractor } from "./kg-extractor.js";
 import { retroactiveBoost, DEFAULT_RETROACTIVE_BOOST_CONFIG, type RetroactiveBoostConfig } from "./retroactive-boost.js";
+import { detectLanguage } from "./language-hook.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -208,6 +209,9 @@ export class IngestionPipeline {
     const topicTag = (input as Record<string, unknown>).topic_tag as string | undefined
       ?? detectTopicTag(input.text);
 
+    // Language detection: auto-detect from text (babel-memory, optional)
+    const language = detectLanguage(input.text);
+
     const smartMeta = buildSmartMetadata(
       { text: input.text },
       {
@@ -223,6 +227,7 @@ export class IngestionPipeline {
         ...(conflictWith ? { supersedes: conflictWith } : {}),
         ...(input.provenance ? { provenance: input.provenance } : {}),
         ...(topicTag ? { topic_tag: topicTag } : {}),
+        ...(language !== "en" ? { language } : {}),
       },
     );
 

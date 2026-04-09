@@ -151,6 +151,10 @@ export * from "./feedback-learner.js";
 // Entity resolution
 export * from "./entity-resolver.js";
 
+// Language hook (optional babel-memory integration for multilingual FTS/KG/session)
+export { ensureReady, hasBabelMemory, detectLanguage, tokenizeForFts, tokenizeQuery, getLocalizedKgPrompt, getLocalizedSessionPrompt } from "./language-hook.js";
+export type { Language, KgPrompt, SessionPrompt } from "./language-hook.js";
+
 // Multi-hop retrieval (optional two-round search)
 export * from "./multi-hop-retriever.js";
 

@@ -16,6 +16,7 @@
 import type { LlmClient } from "./llm-client.js";
 import type { MemoryCategory } from "./memory-categories.js";
 import type { IngestionPipeline, IngestionInput } from "./ingestion-pipeline.js";
+import { getLocalizedSessionPrompt } from "./language-hook.js";
 
 // ============================================================================
 // Types
@@ -217,6 +218,36 @@ export function microcompact(
  * Instructs the LLM to return JSON with 9 dimension fields.
  */
 function buildSummarizePrompt(conversationText: string): string {
+  // Use babel-memory's language-aware prompt when available
+  const localized = getLocalizedSessionPrompt(conversationText);
+  if (localized) {
+    const labels = localized.dimensionLabels;
+    return `${localized.system}
+
+Return valid JSON only, with these exact keys:
+{
+  "userIntent": "${labels.user_intent ?? "User intent and requests"}",
+  "keyConcepts": "${labels.technical_concepts ?? "Key technical concepts"}",
+  "filesAndCode": "${labels.files_and_code ?? "Files and code segments involved"}",
+  "errorsAndFixes": "${labels.errors_and_fixes ?? "Errors and fix records"}",
+  "problemSolving": "${labels.problem_solving ?? "Problem solving process"}",
+  "userQuotes": "${labels.user_quotes ?? "User original quotes preserved"}",
+  "pendingTasks": "${labels.unfinished_tasks ?? "Unfinished tasks"}",
+  "currentWork": "${labels.current_state ?? "Current work state"}",
+  "suggestedNext": "${labels.next_steps ?? "Suggested next steps"}"
+}
+
+Rules:
+- If a dimension has no relevant content, use "none"
+- Preserve file paths, URLs, port numbers, API names verbatim
+- Be concise but complete
+- Output valid JSON only, no markdown fences, no explanation
+
+Conversation:
+${conversationText}`;
+  }
+
+  // Built-in English default
   return `You are a session distillation assistant. Compress the following conversation into a structured summary with exactly 9 dimensions.
 
 Return valid JSON only, with these exact keys:
