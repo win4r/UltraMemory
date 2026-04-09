@@ -15,6 +15,7 @@ import {
 import { dirname, join } from "node:path";
 import { buildSmartMetadata, isMemoryActiveAt, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
 import { deterministicId } from "./utils/deterministic-id.js";
+import { tokenizeQuery } from "./language-hook.js";
 
 // ============================================================================
 // Types
@@ -677,6 +678,9 @@ export class MemoryStore {
     // Over-fetch when filtering inactive records to avoid crowding
     const fetchLimit = inactiveFilter ? Math.min(safeLimit * 20, 200) : safeLimit;
 
+    // Pre-tokenize query for better CJK recall (babel-memory, optional)
+    const tokenizedQuery = tokenizeQuery(query);
+
     if (!this.ftsIndexCreated) {
       if (this.ftsUnavailable) {
         const rowCount = await this.table!.countRows();
@@ -691,8 +695,8 @@ export class MemoryStore {
     }
 
     try {
-      // Use FTS query type explicitly
-      let searchQuery = this.table!.search(query, "fts").limit(fetchLimit);
+      // Use FTS query type explicitly (tokenized for CJK when babel-memory available)
+      let searchQuery = this.table!.search(tokenizedQuery, "fts").limit(fetchLimit);
 
       // Apply scope filter if provided
       if (scopeFilter && scopeFilter.length > 0) {

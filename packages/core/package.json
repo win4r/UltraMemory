@@ -17,6 +17,9 @@
     "proper-lockfile": "^4.1.2",
     "uuid": "^13.0.0"
   },
+  "optionalDependencies": {
+    "babel-memory": "^2.0.0"
+  },
   "devDependencies": {
     "jiti": "^2.6.1"
   },
