@@ -46,12 +46,13 @@ importers:
         specifier: ^13.0.0
         version: 13.0.0
     devDependencies:
-      babel-memory:
-        specifier: ^2.0.0
-        version: 2.0.0
       jiti:
         specifier: ^2.6.1
         version: 2.6.1
+    optionalDependencies:
+      babel-memory:
+        specifier: ^2.0.0
+        version: 2.0.0
 
   packages/openclaw:
     dependencies:
@@ -296,7 +297,6 @@ packages:
   '@lancedb/lancedb@0.26.2':
     resolution: {integrity: sha512-umk4WMCTwJntLquwvUbpqE+TXREolcQVL9MHcxr8EhRjsha88+ATJ4QuS/hpyiE1CG3R/XcgrMgJAGkziPC/gA==}
     engines: {node: '>= 18'}
-    cpu: [x64, arm64]
     os: [darwin, linux, win32]
     peerDependencies:
       apache-arrow: '>=15.0.0 <=18.1.0'
@@ -1180,6 +1180,7 @@ snapshots:
       jieba-wasm: 2.4.0
       snowball-stemmers: 0.6.0
       wordcut: 0.9.1
+    optional: true
 
   balanced-match@1.0.2:
     optional: true
